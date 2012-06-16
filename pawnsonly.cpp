@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <sstream>
 
 #define DEBUG 1
 
@@ -12,9 +13,11 @@ using std::ostream;
 using std::cout;
 using std::endl;
 using std::cerr;
+using std::string;
+using std::stringstream;
 
 // board size (number of pawns per side). Must be >= 4.
-static const int N = 8;
+static const int N = 7;
 
 // number of internal ranks (i.e. those on which pawns can be
 // without the game being over)
@@ -27,7 +30,8 @@ static const int NUM_ISQ = N*NUM_RANKS;
 static const int RANK_WHITE = 0;
 static const int RANK_BLACK = NUM_RANKS-1;
 
-static const int MAX_LEGAL_MOVES = N*2;
+// tighter limit? N*2 is not enough
+static const int MAX_LEGAL_MOVES = N*3;
 
 // compactly represented position
 typedef uint64_t pos_t;
@@ -41,15 +45,32 @@ const char *player_name(int player) {
 	assert(0);
 }
 
-static const int SQ(int x, int y) {
+static void assert_valid_sq(int x, int y) {
     assert(x >= 0);
     assert(x < N);
     assert(y >= 0);
     assert(y < N-2);
+}
 
+static const int SQ(int x, int y) {
+    assert_valid_sq(x, y);
     return y*N+x;
 }
 
+static string sqname(int x, int y) {
+    assert_valid_sq(x, y);
+    stringstream sb;
+    assert(N < 26);
+    sb << (char)('a'+x);
+    sb << 2+y;
+    return sb.str();
+}
+
+static string sqname(int sq) {
+    assert(sq >= 0);
+    assert(sq < NUM_ISQ);
+    return sqname(sq%N, sq/N);
+}
 
 static uint64_t binom(int n, int k) {
     assert(n >= 0);
@@ -120,6 +141,12 @@ class Pos {
     void count_pieces() const { if (num_white == -1) force_count_pieces(); }
     void clear();
 public:
+    // 'replacing' = the contents of the square moved to
+    // (so this information is enough to undo the move)
+    struct Move {
+	int from, to, replacing;
+    };
+
     Pos(); // initial position
     Pos(pos_t);
     pos_t pack() const;
@@ -127,9 +154,148 @@ public:
     ostream &print(ostream &str) const;
     void random_position();
     void random_position(int nwhites, int nblacks);
+    int get_turn() const { return turn; }
+
+    int winner() const; // -1 if won by black, 1 if by white, 0 otherwise
+
+    // have space for MAX_LEGAL_MOVES. Returns count.
+    int get_legal_moves(Move *moves) const;
+
+    void do_move(const Move &move);
+    void undo_move(const Move &move);
 
     bool operator==(const Pos &) const;
 };
+
+ostream &operator<<(ostream &os, const Pos::Move &move) {
+    os << sqname(move.from);
+    if (move.replacing)
+	os << "x";
+    os << sqname(move.to);
+    return os;
+}
+
+void Pos::do_move(const Move &move) {
+    assert(num_white >= 0 && num_black >= 0);
+
+    assert(sq[move.from] == turn);
+    assert(sq[move.to] == move.replacing);
+    sq[move.from] = 0;
+    sq[move.to] = turn;
+    if (move.replacing) {
+	assert(move.replacing == -turn);
+	if (turn == 1)
+	    num_black--;
+	else
+	    num_white--;
+    }
+    turn = -turn;
+}
+
+void Pos::undo_move(const Move &move) {
+    turn = -turn;
+    assert(sq[move.to] == turn);
+    assert(sq[move.from] == 0);
+    sq[move.from] = turn;
+    sq[move.to] = move.replacing;
+    if (move.replacing) {
+	assert(move.replacing == -turn);
+	if (turn == 1)
+	    num_black++;
+	else
+	    num_white++;
+    }
+}
+
+int Pos::get_legal_moves(Pos::Move *moves) const {
+    int positions[N], num_pawns = 0, num_moves = 0;
+
+    if (winner() != 0)
+	return 0;
+
+    // try to return potentially more useful moves first
+    if (turn == -1) {
+	for (int i=0; i<NUM_ISQ; i++)
+	    if (sq[i] == turn)
+		positions[num_pawns++] = i;
+    } else {
+	for (int i=NUM_ISQ-1; i>=0; i--)
+	    if (sq[i] == turn)
+		positions[num_pawns++] = i;
+
+    }
+		
+    assert(num_pawns <= N);
+
+    int home_start, home_end;
+    if (turn == 1)
+	home_start = 0;
+    else {
+	assert(turn == -1);
+	home_start = SQ(0, NUM_RANKS-1);
+    }
+    home_end = home_start + N-1;
+
+    for (int i=0; i<num_pawns; i++) {
+	int s = positions[i], file = s%N;
+	int front = s + turn*N; // sq in front of current
+	if (sq[front] == 0) {
+	    // front square empty, add it
+	    moves[num_moves].from = s;
+	    moves[num_moves].to = front;
+	    moves[num_moves++].replacing = 0;
+	    if (N >= 5 && s >= home_start && s <= home_end) {
+		// move ahead 2 squares?
+		int front2 = front + turn*N;
+		assert(front2 >= 0);
+		assert(front2 < NUM_ISQ);
+		if (sq[front2] == 0) {
+		    moves[num_moves].from = s;
+		    moves[num_moves].to = front2;
+		    moves[num_moves++].replacing = 0;
+		}
+	    }
+	}
+	if (file != 0 && sq[front-1] == -turn) {
+	    // may capture to left
+	    moves[num_moves].from = s;
+	    moves[num_moves].to = front-1;
+	    moves[num_moves++].replacing = -turn;
+	}
+	if (file != N-1 && sq[front+1] == -turn) {
+	    // may capture to right
+	    moves[num_moves].from = s;
+	    moves[num_moves].to = front+1;
+	    moves[num_moves++].replacing = -turn;
+	}
+    }
+
+    assert(num_moves <= MAX_LEGAL_MOVES);
+    return num_moves;
+}
+
+int Pos::winner() const {
+    int base;
+
+    assert(num_white >= 0 && num_black >= 0);
+
+    if (num_white == 0) {
+	assert(num_black > 0);
+	return -1;
+    } else if (num_black == 0)
+	return 1;
+
+    if (turn == 1)
+	base = SQ(0, NUM_RANKS-1);
+    else {
+	assert(turn == -1);
+	base = SQ(0, 0);
+    }
+    for (int i=0; i<N; i++)
+	if (sq[base+i] == turn)
+	    return turn;
+    return 0;
+}
 
 bool Pos::operator==(const Pos &a) const {
     if (turn != a.turn)
@@ -272,10 +438,11 @@ Pos::Pos(pos_t compact) {
 // mainly check that no player has more than N pawns
 void Pos::check_sanity() {
     assert(turn == -1 || turn == 1);
+    assert(num_white >= 0 && num_black >= 0);
+
     int wc = num_white, bc = num_black;
-    force_count_pieces();
-    assert(wc == -1 || wc == num_white);
-    assert(bc == -1 || bc == num_black);
+    assert(wc == num_white);
+    assert(bc == num_black);
 }
 
 ostream &Pos::print(ostream &str) const {
@@ -316,14 +483,20 @@ void Pos::clear() {
 }
 
 void Pos::random_position() {
-    int r = rand();
-    int w = r % N;
-    r /= N;
-    int b = r%N;
+    int w=0,b=0;
+    do {
+	int r = rand();
+	w = r % N;
+	r /= N;
+	b = r%N;
+    } while (w == 0 && b == 0);
     random_position(w,b);
 }
 
 void Pos::random_position(int nw, int nb) {
+    assert(nw >= 0 && nw <= N);
+    assert(nb >= 0 && nb <= N);
+    assert(nw != 0 || nb != 0);
     clear();
     num_white = nw;
     num_black = nb;
@@ -362,8 +535,7 @@ void count_boards() {
     cout << "\ntotal\t" << log(total)/log(2) << "\t\t" << total << endl;
 }
 
-int main() {
-    //count_boards();
+void pack_unpack_random_positions() {
     int i=0;
     while (true) {
 	Pos p;
@@ -381,4 +553,92 @@ int main() {
 	if (++i % 10000 == 0)
 	    cout << i << endl;
     }
+}
+
+void test_do_undo_move() {
+    pos_t position_number;
+    int count=0;
+    int verbose=0;
+    while (true) {
+	Pos p;
+	p.random_position();
+	Pos origpos(p);
+	Pos::Move moves[MAX_LEGAL_MOVES];
+	position_number = p.pack();
+	// if (position_number == 20137260669466283LL)
+	//     verbose=1;
+	if (verbose) {
+	    cout << "Getting legal moves for position " << position_number << ":" << endl;
+	    p.print(cout);
+	}
+	int num_moves = p.get_legal_moves(moves);
+	if (num_moves == 0)
+	    continue;
+	if (verbose)
+	    p.print(cout);
+	for (int i=0; i<num_moves; i++) {
+	    if (verbose)
+		cout << "Testing do-undo " << moves[i] << "..." << endl;
+	    p.do_move(moves[i]);
+	    //cout << "After move: " << endl;
+	    //p.print(cout);
+	    p.undo_move(moves[i]);
+	    if (!(p == origpos)) {
+		cout << "Do-undo-move altered position! Original ("
+		     << origpos.pack() << ")" << endl;
+		origpos.print(cout);
+		cout << "After do-undo move " << moves[i] << " ("
+		     << p.pack() << "):" << endl;
+		p.print(cout);
+		abort();
+	    }
+	}
+	if (++count % 100000 == 0)
+	    cout << count << endl;
+    }
+}
+
+int minimax(Pos *p) {
+    Pos::Move moves[MAX_LEGAL_MOVES];
+    int results[MAX_LEGAL_MOVES];
+
+    int turn = p->get_turn();
+    int num_legal_moves = p->get_legal_moves(moves);
+
+    //p->print(cout);
+
+    if (num_legal_moves == 0) {
+	//cout << "Game over." << endl;
+	return p->winner();
+    }
+
+    for (int i=0; i<num_legal_moves; i++) {
+	//cout << "Taking move " << moves[i] << endl;
+	p->check_sanity();
+	p->do_move(moves[i]);
+	p->check_sanity();
+	results[i] = minimax(p);
+	//cout << "Undoing move " << moves[i] << endl;
+	p->undo_move(moves[i]);
+	p->check_sanity();
+	if (results[i] == turn)
+	    return turn; // we can force win
+    }
+
+    for (int i=0; i<num_legal_moves; i++)
+	if (results[i] == 0)
+	    return 0; // we can force draw
+
+    return -turn; // we lose
+}
+
+int main() {
+    //count_boards();
+
+    //test_do_undo_move();
+
+    Pos p;
+    int result = minimax(&p);
+    
+    cout << "result=" << result << endl;
 }
