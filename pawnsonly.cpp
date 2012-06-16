@@ -6,12 +6,16 @@
 #include <cmath>
 #include <algorithm>
 #include <sstream>
-#include <map>
+#include <vector>
 
 #define DEBUG 1
 #define VERBOSE_DEPTH 6
 
-#define TRANSPOSITION_DEPTH 17
+#define TRANSPOSITION_DEPTH 10000
+
+// # of 8-byte elements; try to choose a prime
+static const size_t TP_TABLE_SIZE = 536870909;
+//static const size_t TP_TABLE_SIZE = 9614669;
 
 using std::ostream;
 using std::cout;
@@ -19,7 +23,7 @@ using std::endl;
 using std::cerr;
 using std::string;
 using std::stringstream;
-using std::map;
+using std::vector;
 
 // board size (number of pawns per side). Must be >= 4.
 static const int N = 7;
@@ -140,6 +144,7 @@ Compact_tab::Compact_tab() {
 	    p++;
 	}
     assert(p == SIZE);
+    assert(tab[p-1] >> 62 == 0);
 }
 
 class Pos {
@@ -631,12 +636,72 @@ void test_do_undo_move() {
     }
 }
 
-int minimax(Pos *p, int depth, map<pos_t, int> *tp_table) {
+class TranspositionTable {
+    struct entry {
+	uint64_t pos : 62;
+	unsigned result : 2; // 0 = black, 1 = draw, 2 = white, 3 = uninit
+    } __attribute__ ((packed));
+    vector<entry> tab;
+    static TranspositionTable *instance;
+    TranspositionTable(const TranspositionTable &);
+    size_t hash(uint64_t pos) const { return pos%TP_TABLE_SIZE; }
+public:
+    TranspositionTable() {
+	assert(!instance);
+	instance = this;
+	tab.resize(TP_TABLE_SIZE);
+	for (size_t i=0; i<TP_TABLE_SIZE; i++)
+	    tab[i].result = 3;
+	tab[0].pos = 1;
+    }
+
+    // returns true and assigns result if found
+    int probe(uint64_t pos, int *result) const; // assigns -1, 0, 1
+    void add(uint64_t pos, int result);
+    size_t size() const;
+} tp_table;
+
+size_t TranspositionTable::size() const {
+    size_t count=0;
+    for (size_t i=0; i<TP_TABLE_SIZE; i++)
+	if (tab[i].result != 3)
+	    count++;
+    return count;
+}
+
+int TranspositionTable::probe(uint64_t pos, int *result) const {
+    size_t h = hash(pos);
+    if (tab[h].pos == pos) {
+	*result = ((int)tab[h].result)-1;
+	return 1;
+    }
+    return 0;
+}
+
+void TranspositionTable::add(uint64_t pos, int result) {
+    size_t h = hash(pos);
+    assert(pos >> 62 == 0);
+    assert(result >= -1 && result <= 1);
+    tab[h].pos = pos;
+    tab[h].result = result+1;
+}
+
+TranspositionTable *TranspositionTable::instance = nullptr;
+
+struct {
+    int curr_move;
+    int num_moves;
+} depth_info[VERBOSE_DEPTH];
+
+int minimax(Pos *p, int depth) {
     Pos::Move moves[MAX_LEGAL_MOVES];
     int results[MAX_LEGAL_MOVES];
 
     int turn = p->get_turn();
     int num_legal_moves = p->get_legal_moves(moves);
+
+    if (depth <= VERBOSE_DEPTH)
+	depth_info[depth-1].num_moves = num_legal_moves;
 
     //p->print(cout);
 
@@ -648,40 +713,47 @@ int minimax(Pos *p, int depth, map<pos_t, int> *tp_table) {
     for (int i=0; i<num_legal_moves; i++) {
 	//cout << "Taking move " << moves[i] << endl;
 	//p->check_sanity();
-	if (depth <= VERBOSE_DEPTH)
-	    cout << "Depth " << depth << ": move "
-		 << i+1 << "/" << num_legal_moves << "... " << endl;
+	if (depth <= VERBOSE_DEPTH) {
+	    depth_info[depth-1].curr_move = i+1;
+	    for (int j=0; j<depth; j++) {
+		cout << depth_info[j].curr_move << "/"
+		     << depth_info[j].num_moves << "\t";
+	    }
+	    for (int j=depth; j<VERBOSE_DEPTH; j++)
+		cout << "\t";
+	    cout << tp_table.size()/double(TP_TABLE_SIZE)*100.0 << "%" << endl;
+	    // cout << "Depth " << depth << ": move "
+	    // 	 << i+1 << "/" << num_legal_moves << "... " << endl;
+	}
 	p->do_move(moves[i]);
 	pos_t packed = 0;
 
 	bool got_result = false;
 
-	if (tp_table) {
+	if (depth <= TRANSPOSITION_DEPTH) {
 	    packed = p->pack();
-	    auto it = tp_table->find(packed);
-	    if (it != tp_table->end()) {
-		results[i] = it->second;
+	    if (tp_table.probe(packed, &results[i]))
 		got_result = true;
-	    }
 	}
 
 	//p->check_sanity();
 
 	if (!got_result) {
-	    if (depth+1 <= TRANSPOSITION_DEPTH)
-		results[i] = minimax(p, depth+1, tp_table);
-	    else
-		results[i] = minimax(p, depth+1, nullptr);
+	    results[i] = minimax(p, depth+1);
 
-	    if (tp_table) {
-		(*tp_table)[packed] = results[i];
+	    if (depth <= TRANSPOSITION_DEPTH) {
+		tp_table.add(packed, results[i]);
 		//cout << "tp size = " << tp_table->size() << endl;
 	    }
 	}
 
-	if (depth <= VERBOSE_DEPTH)
-	    cout << "Depth " << depth << ": move "
-		 << i+1 << "/" << num_legal_moves << " RESULT=" << results[i] << endl;
+	// if (depth <= VERBOSE_DEPTH) {
+	//     cout << "Depth " << depth << ": move "
+	// 	 << i+1 << "/" << num_legal_moves << " RESULT=" << results[i] << endl;
+	//     size_t a = tp_table.size();
+	//     cout << "Transposition table size = " << a << " ("
+	// 	 << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
+	// }
 
 	//cout << "Undoing move " << moves[i] << endl;
 	p->undo_move(moves[i]);
@@ -699,13 +771,12 @@ int minimax(Pos *p, int depth, map<pos_t, int> *tp_table) {
 
 int main() {
     //count_boards();
-
     //test_pack_unpack();
     //test_do_undo_move();
 
-    map<pos_t, int> tp_table;
+    //map<pos_t, int> tp_table;
     Pos p;
-    int result = minimax(&p, 1, &tp_table);
+    int result = minimax(&p, 1);
     
     cout << "result=" << result << endl;
 }
