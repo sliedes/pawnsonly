@@ -658,15 +658,15 @@ public:
     // returns true and assigns result if found
     int probe(uint64_t pos, int *result) const; // assigns -1, 0, 1
     void add(uint64_t pos, int result);
-    size_t size() const;
+    size_t size() const; // estimate
 } tp_table;
 
 size_t TranspositionTable::size() const {
     size_t count=0;
-    for (size_t i=0; i<TP_TABLE_SIZE; i++)
+    for (size_t i=0; i<TP_TABLE_SIZE/40; i++)
 	if (tab[i].result != 3)
 	    count++;
-    return count;
+    return count*40;
 }
 
 int TranspositionTable::probe(uint64_t pos, int *result) const {
