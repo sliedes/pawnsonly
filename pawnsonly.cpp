@@ -6,8 +6,12 @@
 #include <cmath>
 #include <algorithm>
 #include <sstream>
+#include <map>
 
 #define DEBUG 1
+#define VERBOSE_DEPTH 6
+
+#define TRANSPOSITION_DEPTH 17
 
 using std::ostream;
 using std::cout;
@@ -15,6 +19,7 @@ using std::endl;
 using std::cerr;
 using std::string;
 using std::stringstream;
+using std::map;
 
 // board size (number of pawns per side). Must be >= 4.
 static const int N = 7;
@@ -105,12 +110,15 @@ public:
 	assert(n < SIZE);
 	return tab[n];
     }
-    uint64_t base(int nwhite, int nblack) {
+    uint64_t base(int nwhite, int nblack) const {
 	assert(nwhite >= 0 && nwhite <= N);
 	assert(nblack >= 0 && nblack <= N);
-	return tab[nwhite*(N+1)+nblack];
+	assert(nwhite != 0 || nblack != 0);
+	return tab[nwhite*(N+1)+nblack-1];
     }
-    // returns the index of the first element >= n
+    int num_white(int idx) const { return (idx+1)/(N+1); }
+    int num_black(int idx) const { return (idx+1)%(N+1); }
+    // returns the index of the last element <= n
     int find(uint64_t n) const {
 	return std::upper_bound(tab, tab+SIZE, n) - tab - 1;
     }
@@ -126,7 +134,9 @@ Compact_tab::Compact_tab() {
 	for (int black=0; black<=N; black++) {
 	    if (white == 0 && black == 0)
 		continue;
-	    tab[p] = tab[p-1] + binom(NUM_ISQ, white) * binom(NUM_ISQ, black);
+	    // cout << "[" << p-1 << "]: " << white << "+" << black << ": "
+	    // 	 << binom(NUM_ISQ, white) * binom(NUM_ISQ, black) * 2 << endl;
+	    tab[p] = tab[p-1] + binom(NUM_ISQ, white) * binom(NUM_ISQ, black) * 2;
 	    p++;
 	}
     assert(p == SIZE);
@@ -209,6 +219,8 @@ void Pos::undo_move(const Move &move) {
 
 int Pos::get_legal_moves(Pos::Move *moves) const {
     int positions[N], num_pawns = 0, num_moves = 0;
+    Pos::Move non_captures[2*N];
+    int num_nc = 0;
 
     if (winner() != 0)
 	return 0;
@@ -241,18 +253,18 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	int front = s + turn*N; // sq in front of current
 	if (sq[front] == 0) {
 	    // front square empty, add it
-	    moves[num_moves].from = s;
-	    moves[num_moves].to = front;
-	    moves[num_moves++].replacing = 0;
+	    non_captures[num_nc].from = s;
+	    non_captures[num_nc].to = front;
+	    non_captures[num_nc++].replacing = 0;
 	    if (N >= 5 && s >= home_start && s <= home_end) {
 		// move ahead 2 squares?
 		int front2 = front + turn*N;
 		assert(front2 >= 0);
 		assert(front2 < NUM_ISQ);
 		if (sq[front2] == 0) {
-		    moves[num_moves].from = s;
-		    moves[num_moves].to = front2;
-		    moves[num_moves++].replacing = 0;
+		    non_captures[num_nc].from = s;
+		    non_captures[num_nc].to = front2;
+		    non_captures[num_nc++].replacing = 0;
 		}
 	    }
 	}
@@ -269,6 +281,10 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	    moves[num_moves++].replacing = -turn;
 	}
     }
+
+    assert(num_nc <= 2*N);
+    for (int i=0; i<num_nc; i++)
+	moves[num_moves++] = non_captures[i];
 
     assert(num_moves <= MAX_LEGAL_MOVES);
     return num_moves;
@@ -379,14 +395,24 @@ pos_t Pos::pack() const {
     offset = offset * binom(NUM_ISQ, num_black) + blacks_rank;
     offset = offset * 2 + (turn == -1);
 
+    bool error = false;
+
     if (DEBUG) {
-	if (num_white != 8 || num_black != 8) {
+	if (num_white != N || num_black != N) {
 	    uint64_t base_range = ranks_tab[ranks_tab.find(base)+1]-ranks_tab[ranks_tab.find(base)];
-	    assert(offset < base_range);
+	    if (offset >= base_range) {
+		cerr << "pack error: offset >= base_range." << endl;
+		error = true;
+	    }
 	}
     }
 
-    if (ranks_tab.find(base + offset) != num_white*(N+1)+num_black) {
+    if (ranks_tab.find(base + offset) != num_white*(N+1)+num_black-1) {
+	cerr << "pack error: wrong index" << endl;
+	error = true;
+    }
+
+    if (error) {
 	print(cerr);
 	cerr << "base = " << base << endl;
 	cerr << "offset = " << offset << endl;
@@ -396,7 +422,7 @@ pos_t Pos::pack() const {
 	cerr << "ranks_tab.find(base) = " << ranks_tab.find(base) << endl;
 	cerr << "ranks_tab@base = " << ranks_tab[ranks_tab.find(base)] << endl;
 	cerr << "base_range = " << ranks_tab[ranks_tab.find(base)+1]-ranks_tab[ranks_tab.find(base)] << endl;
-	cerr << "ranks_tab.find(base + offset) = " << ranks_tab.find(base+offset) << endl;
+	cerr << "ranks_tab.find(base + offset) = index " << ranks_tab.find(base+offset) << endl;
 	cerr << "ranks_tab.find(base + offset) = " << ranks_tab[ranks_tab.find(base+offset)] << endl;
 	abort();
     }
@@ -407,11 +433,12 @@ Pos::Pos(pos_t compact) {
     clear();
 
     uint64_t idx = ranks_tab.find(compact);
+    assert(ranks_tab[idx] <= compact);
     uint64_t base = ranks_tab[idx];
     uint64_t offset = compact-base;
 
-    num_black = idx%(N+1);
-    num_white = idx/(N+1);
+    num_black = (idx+1)%(N+1);
+    num_white = (idx+1)/(N+1);
 
     if (offset % 2)
 	turn = -1;
@@ -425,12 +452,18 @@ Pos::Pos(pos_t compact) {
 
     int squares[N];
     unrank_combination(squares, num_white, whites_rank);
-    for (int i=0; i<num_white; i++)
+    for (int i=0; i<num_white; i++) {
+	assert(squares[i] >= 0);
+	assert(squares[i] < NUM_ISQ);
 	sq[squares[i]] = 1;
+    }
 
     unrank_combination(squares, num_black, blacks_rank);
-    for (int i=0; i<num_black; i++)
+    for (int i=0; i<num_black; i++) {
+	assert(squares[i] >= 0);
+	assert(squares[i] < NUM_ISQ);
 	sq[squares[i]] = -1;
+    }
     
 }
 
@@ -535,7 +568,7 @@ void count_boards() {
     cout << "\ntotal\t" << log(total)/log(2) << "\t\t" << total << endl;
 }
 
-void pack_unpack_random_positions() {
+void test_pack_unpack() {
     int i=0;
     while (true) {
 	Pos p;
@@ -598,7 +631,7 @@ void test_do_undo_move() {
     }
 }
 
-int minimax(Pos *p) {
+int minimax(Pos *p, int depth, map<pos_t, int> *tp_table) {
     Pos::Move moves[MAX_LEGAL_MOVES];
     int results[MAX_LEGAL_MOVES];
 
@@ -614,13 +647,45 @@ int minimax(Pos *p) {
 
     for (int i=0; i<num_legal_moves; i++) {
 	//cout << "Taking move " << moves[i] << endl;
-	p->check_sanity();
+	//p->check_sanity();
+	if (depth <= VERBOSE_DEPTH)
+	    cout << "Depth " << depth << ": move "
+		 << i+1 << "/" << num_legal_moves << "... " << endl;
 	p->do_move(moves[i]);
-	p->check_sanity();
-	results[i] = minimax(p);
+	pos_t packed = 0;
+
+	bool got_result = false;
+
+	if (tp_table) {
+	    packed = p->pack();
+	    auto it = tp_table->find(packed);
+	    if (it != tp_table->end()) {
+		results[i] = it->second;
+		got_result = true;
+	    }
+	}
+
+	//p->check_sanity();
+
+	if (!got_result) {
+	    if (depth+1 <= TRANSPOSITION_DEPTH)
+		results[i] = minimax(p, depth+1, tp_table);
+	    else
+		results[i] = minimax(p, depth+1, nullptr);
+
+	    if (tp_table) {
+		(*tp_table)[packed] = results[i];
+		//cout << "tp size = " << tp_table->size() << endl;
+	    }
+	}
+
+	if (depth <= VERBOSE_DEPTH)
+	    cout << "Depth " << depth << ": move "
+		 << i+1 << "/" << num_legal_moves << " RESULT=" << results[i] << endl;
+
 	//cout << "Undoing move " << moves[i] << endl;
 	p->undo_move(moves[i]);
-	p->check_sanity();
+	//p->check_sanity();
 	if (results[i] == turn)
 	    return turn; // we can force win
     }
@@ -635,10 +700,12 @@ int minimax(Pos *p) {
 int main() {
     //count_boards();
 
+    //test_pack_unpack();
     //test_do_undo_move();
 
+    map<pos_t, int> tp_table;
     Pos p;
-    int result = minimax(&p);
+    int result = minimax(&p, 1, &tp_table);
     
     cout << "result=" << result << endl;
 }
