@@ -11,11 +11,12 @@
 #define DEBUG 1
 #define VERBOSE_DEPTH 5
 
-#define TRANSPOSITION_DEPTH 10000
-
 // # of 8-byte elements; try to choose a prime
-static const size_t TP_TABLE_SIZE = 536870909;
+static const size_t TP_TABLE_SIZE = 536870909; // 4 gigabytes
+//static const size_t TP_TABLE_SIZE = 671088637; // 5 gigabytes
+//static const size_t TP_TABLE_SIZE = 134217689; // 1 gigabyte
 //static const size_t TP_TABLE_SIZE = 9614669;
+//static const size_t TP_TABLE_SIZE = 30146531; // 230 megabytes
 
 using std::ostream;
 using std::cout;
@@ -81,7 +82,7 @@ static string sqname(int sq) {
     return sqname(sq%N, sq/N);
 }
 
-static uint64_t binom(int n, int k) {
+static uint64_t __attribute__ ((unused)) binom_rec(int n, int k) {
     assert(n >= 0);
     assert(k >= 0);
     uint64_t v = 1;
@@ -92,6 +93,42 @@ static uint64_t binom(int n, int k) {
     return v;
 }
 
+static uint64_t binom_tab[NUM_ISQ][NUM_ISQ];
+
+static void init_binom() {
+    memset(binom_tab, 0, sizeof(binom_tab));
+    binom_tab[0][0] = 1;
+    for (int n=1; n<NUM_ISQ; n++)
+	for (int k=0; k<NUM_ISQ; k++) {
+	    uint64_t left;
+	    if (k == 0)
+		left = 1;
+	    else
+		left = binom_tab[n-1][k-1];
+	    binom_tab[n][k] = left + binom_tab[n-1][k];
+	}
+
+    // for (int n=0; n<5; n++) {
+    // 	for (int k=0; k<5; k++)
+    // 	    cout << binom_tab[n][k] << "\t";
+    // 	cout << endl;
+    // }
+}
+
+static uint64_t binom(int n, int k) {
+    assert(n >= 0);
+    assert(k >= 0);
+    assert(n <= NUM_ISQ);
+    assert(k <= NUM_ISQ);
+
+    if (k == 0)
+	return 1;
+    if (n == 0)
+	return 0;
+
+    //assert(binom_tab[n-1][k-1] == binom_rec(n,k));
+    return binom_tab[n-1][k-1];
+}
 
 // returns largest c s.t. binom(c, k) <= N
 static int rev_binom_floor(uint64_t N, int k) {
@@ -132,6 +169,9 @@ Compact_tab *Compact_tab::instance = nullptr;
 
 Compact_tab::Compact_tab() {
     instance = this;
+
+    init_binom();
+
     int p=0;
     tab[p++] = 0;
     for (int white=0; white<=N; white++)
@@ -649,6 +689,7 @@ class TranspositionTable {
     vector<entry> tab;
     static TranspositionTable *instance;
     TranspositionTable(const TranspositionTable &);
+    //size_t hash(uint64_t pos) const { return (pos*1073741789)%TP_TABLE_SIZE; }
     size_t hash(uint64_t pos) const { return pos%TP_TABLE_SIZE; }
 public:
     TranspositionTable() {
@@ -677,7 +718,7 @@ size_t TranspositionTable::size() const {
 int TranspositionTable::probe(uint64_t pos, int *result) const {
     size_t h = hash(pos);
     if (tab[h].pos == pos) {
-	*result = ((int)tab[h].result)-1;
+	*result = int(tab[h].result)-1;
 	return 1;
     }
     return 0;
@@ -735,21 +776,15 @@ int minimax(Pos *p, int depth) {
 
 	bool got_result = false;
 
-	if (depth <= TRANSPOSITION_DEPTH) {
-	    packed = p->pack();
-	    if (tp_table.probe(packed, &results[i]))
-		got_result = true;
-	}
+	packed = p->pack();
+	if (tp_table.probe(packed, &results[i]))
+	    got_result = true;
 
 	//p->check_sanity();
 
 	if (!got_result) {
 	    results[i] = minimax(p, depth+1);
-
-	    if (depth <= TRANSPOSITION_DEPTH) {
-		tp_table.add(packed, results[i]);
-		//cout << "tp size = " << tp_table->size() << endl;
-	    }
+	    tp_table.add(packed, results[i]);
 	}
 
 	// if (depth <= VERBOSE_DEPTH) {
