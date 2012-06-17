@@ -9,7 +9,7 @@
 #include <vector>
 
 #define DEBUG 1
-#define VERBOSE_DEPTH 9
+#define VERBOSE_DEPTH 5
 
 #define TRANSPOSITION_DEPTH 10000
 
@@ -26,7 +26,7 @@ using std::stringstream;
 using std::vector;
 
 // board size (number of pawns per side). Must be >= 4.
-static const int N = 8;
+static const int N = 7;
 
 // number of internal ranks (i.e. those on which pawns can be
 // without the game being over)
@@ -159,7 +159,7 @@ public:
     // 'replacing' = the contents of the square moved to
     // (so this information is enough to undo the move)
     struct Move {
-	int from, to, replacing;
+	int from, to, replacing, value;
     };
 
     Pos(); // initial position
@@ -224,8 +224,6 @@ void Pos::undo_move(const Move &move) {
 
 int Pos::get_legal_moves(Pos::Move *moves) const {
     int positions[N], num_pawns = 0, num_moves = 0;
-    Pos::Move non_captures[2*N];
-    int num_nc = 0;
 
     if (winner() != 0)
 	return 0;
@@ -244,32 +242,30 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 		
     assert(num_pawns <= N);
 
-    int home_start, home_end;
-    if (turn == 1)
-	home_start = 0;
-    else {
-	assert(turn == -1);
-	home_start = SQ(0, NUM_RANKS-1);
-    }
-    home_end = home_start + N-1;
+    // evaluation function: sum of ranks of pawns squared
 
     for (int i=0; i<num_pawns; i++) {
 	int s = positions[i], file = s%N;
 	int front = s + turn*N; // sq in front of current
+	int rank = s/N;
+	if (turn == -1)
+	    rank = NUM_RANKS-1-rank;
 	if (sq[front] == 0) {
 	    // front square empty, add it
-	    non_captures[num_nc].from = s;
-	    non_captures[num_nc].to = front;
-	    non_captures[num_nc++].replacing = 0;
-	    if (N >= 5 && s >= home_start && s <= home_end) {
+	    moves[num_moves].from = s;
+	    moves[num_moves].to = front;
+	    moves[num_moves].value = 2*rank+1;
+	    moves[num_moves++].replacing = 0;
+	    if (N >= 5 && rank == 0) {
 		// move ahead 2 squares?
 		int front2 = front + turn*N;
 		assert(front2 >= 0);
 		assert(front2 < NUM_ISQ);
 		if (sq[front2] == 0) {
-		    non_captures[num_nc].from = s;
-		    non_captures[num_nc].to = front2;
-		    non_captures[num_nc++].replacing = 0;
+		    moves[num_moves].from = s;
+		    moves[num_moves].to = front2;
+		    moves[num_moves].value = 4*rank+4;
+		    moves[num_moves++].replacing = 0;
 		}
 	    }
 	}
@@ -277,21 +273,30 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	    // may capture to left
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front-1;
+	    moves[num_moves].value = 2*rank+1;
+	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
 	    moves[num_moves++].replacing = -turn;
 	}
 	if (file != N-1 && sq[front+1] == -turn) {
 	    // may capture to right
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front+1;
+	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
 	    moves[num_moves++].replacing = -turn;
 	}
     }
 
-    assert(num_nc <= 2*N);
-    for (int i=0; i<num_nc; i++)
-	moves[num_moves++] = non_captures[i];
-
     assert(num_moves <= MAX_LEGAL_MOVES);
+
+    for (int i=0; i<num_moves-1; i++)
+    	for (int j=i+1; j<num_moves; j++) {
+    	    if (moves[j].value > moves[i].value) {
+    		Move tmp = moves[i];
+    		moves[i] = moves[j];
+    		moves[j] = tmp;
+    	    }
+    	}
+
     return num_moves;
 }
 
