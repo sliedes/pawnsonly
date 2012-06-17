@@ -9,7 +9,7 @@
 #include <vector>
 
 #define DEBUG 1
-#define VERBOSE_DEPTH 6
+#define VERBOSE_DEPTH 9
 
 #define TRANSPOSITION_DEPTH 10000
 
@@ -26,7 +26,7 @@ using std::stringstream;
 using std::vector;
 
 // board size (number of pawns per side). Must be >= 4.
-static const int N = 7;
+static const int N = 8;
 
 // number of internal ranks (i.e. those on which pawns can be
 // without the game being over)
@@ -663,10 +663,10 @@ public:
 
 size_t TranspositionTable::size() const {
     size_t count=0;
-    for (size_t i=0; i<TP_TABLE_SIZE/40; i++)
+    for (size_t i=0; i<TP_TABLE_SIZE/10240; i++)
 	if (tab[i].result != 3)
 	    count++;
-    return count*40;
+    return count*10240;
 }
 
 int TranspositionTable::probe(uint64_t pos, int *result) const {
