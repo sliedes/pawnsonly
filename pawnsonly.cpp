@@ -1,3 +1,5 @@
+#include "MemTranspositionTable.hpp"
+#include "binom.hpp"
 #include <iostream>
 #include <cassert>
 #include <cstdlib>
@@ -24,7 +26,6 @@ using std::endl;
 using std::cerr;
 using std::string;
 using std::stringstream;
-using std::vector;
 
 // board size (number of pawns per side). Must be >= 4.
 static const int N = 7;
@@ -81,62 +82,6 @@ static string sqname(int sq) {
     assert(sq < NUM_ISQ);
     return sqname(sq%N, sq/N);
 }
-
-static uint64_t __attribute__ ((unused)) binom_rec(int n, int k) {
-    assert(n >= 0);
-    assert(k >= 0);
-    uint64_t v = 1;
-    for (int i=n; i >= n-k+1; i--)
-	v *= i;
-    for (int i=2; i<=k; i++)
-	v /= i;
-    return v;
-}
-
-static uint64_t binom_tab[NUM_ISQ][NUM_ISQ];
-
-static void init_binom() {
-    memset(binom_tab, 0, sizeof(binom_tab));
-    binom_tab[0][0] = 1;
-    for (int n=1; n<NUM_ISQ; n++)
-	for (int k=0; k<NUM_ISQ; k++) {
-	    uint64_t left;
-	    if (k == 0)
-		left = 1;
-	    else
-		left = binom_tab[n-1][k-1];
-	    binom_tab[n][k] = left + binom_tab[n-1][k];
-	}
-
-    // for (int n=0; n<5; n++) {
-    // 	for (int k=0; k<5; k++)
-    // 	    cout << binom_tab[n][k] << "\t";
-    // 	cout << endl;
-    // }
-}
-
-static uint64_t binom(int n, int k) {
-    assert(n >= 0);
-    assert(k >= 0);
-    assert(n <= NUM_ISQ);
-    assert(k <= NUM_ISQ);
-
-    if (k == 0)
-	return 1;
-    if (n == 0)
-	return 0;
-
-    //assert(binom_tab[n-1][k-1] == binom_rec(n,k));
-    return binom_tab[n-1][k-1];
-}
-
-// returns largest c s.t. binom(c, k) <= N
-static int rev_binom_floor(uint64_t N, int k) {
-    for (int i=1;; i++)
-	if (binom(i, k) > N)
-	    return i-1;
-}
-
 
 // Singleton; 
 class Compact_tab {
@@ -409,23 +354,6 @@ Pos::Pos() {
     count_pieces();
 }
 
-// len(cs) = k; cs in ascending order
-static uint64_t rank_combination(const int *cs, int k) {
-    uint64_t sum = 0;
-    for (int i=0; i<k; i++)
-	sum += binom(cs[i], i+1);
-    return sum;
-}
-
-static void unrank_combination(int *cs, int k, int N) {
-    for (int i=0; i<k; i++) {
-	int c = rev_binom_floor(N, k-i);
-	cs[i] = c;
-	N -= binom(c,k-i);
-    }
-}
-
-
 pos_t Pos::pack() const {
     count_pieces();
     uint64_t base = ranks_tab.base(num_white, num_black);
@@ -681,58 +609,7 @@ void test_do_undo_move() {
     }
 }
 
-class TranspositionTable {
-    struct entry {
-	uint64_t pos : 62;
-	unsigned result : 2; // 0 = black, 1 = draw, 2 = white, 3 = uninit
-    } __attribute__ ((packed));
-    vector<entry> tab;
-    static TranspositionTable *instance;
-    TranspositionTable(const TranspositionTable &);
-    //size_t hash(uint64_t pos) const { return (pos*1073741789)%TP_TABLE_SIZE; }
-    size_t hash(uint64_t pos) const { return pos%TP_TABLE_SIZE; }
-public:
-    TranspositionTable() {
-	assert(!instance);
-	instance = this;
-	tab.resize(TP_TABLE_SIZE);
-	for (size_t i=0; i<TP_TABLE_SIZE; i++)
-	    tab[i].result = 3;
-	tab[0].pos = 1;
-    }
-
-    // returns true and assigns result if found
-    int probe(uint64_t pos, int *result) const; // assigns -1, 0, 1
-    void add(uint64_t pos, int result);
-    size_t size() const; // estimate
-} tp_table;
-
-size_t TranspositionTable::size() const {
-    size_t count=0;
-    for (size_t i=0; i<TP_TABLE_SIZE/10240; i++)
-	if (tab[i].result != 3)
-	    count++;
-    return count*10240;
-}
-
-int TranspositionTable::probe(uint64_t pos, int *result) const {
-    size_t h = hash(pos);
-    if (tab[h].pos == pos) {
-	*result = int(tab[h].result)-1;
-	return 1;
-    }
-    return 0;
-}
-
-void TranspositionTable::add(uint64_t pos, int result) {
-    size_t h = hash(pos);
-    assert(pos >> 62 == 0);
-    assert(result >= -1 && result <= 1);
-    tab[h].pos = pos;
-    tab[h].result = result+1;
-}
-
-TranspositionTable *TranspositionTable::instance = nullptr;
+MemTranspositionTable tp_table(TP_TABLE_SIZE);
 
 struct {
     int curr_move;

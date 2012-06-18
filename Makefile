@@ -1,7 +1,17 @@
 CFLAGS=-std=gnu++11 -Wall -g -O3
 
-pawnsonly: pawnsonly.cpp
-	g++ $< -o $@ $(CFLAGS) $(LDFLAGS)
+OBJS=pawnsonly.o MemTranspositionTable.o binom.o
+
+.cpp.o:
+	gcc -c $< -o $@ $(CFLAGS)
+
+pawnsonly: $(OBJS)
+	g++ $^ -o $@ $(LDFLAGS)
 
 clean:
-	rm -f pawnsonly
+	rm -f pawnsonly *.o
+
+.depend: *.cpp
+	gcc -std=gnu++11 -MM *.cpp >.depend
+
+include .depend
