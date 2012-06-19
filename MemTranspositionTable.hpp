@@ -63,7 +63,7 @@ bool MemTranspositionTable<CAPACITY>::add_with_spill(uint64_t pos, int result,
 
     assert(pos >> 62 == 0);
     assert(result >= -1 && result <= 1);
-    if (tab[h].pos == pos) {
+    if (tab[h].result != 3 && tab[h].pos != pos) {
 	*spilled = tab[h];
 	retval = true;
     }

@@ -33,7 +33,7 @@ template<typename CacheT, typename BackingT>
 void CachedTranspositionTable<CacheT, BackingT>::add(uint64_t pos, int result) {
     TranspositionTableBase::Entry spilled;
     if (cache.add_with_spill(pos, result, &spilled))
-	backing.add(spilled.pos, spilled.result);
+	backing.add(spilled.pos, int(spilled.result)-1);
 }
 
 
@@ -41,7 +41,7 @@ template<typename CacheT, typename BackingT>
 bool CachedTranspositionTable<CacheT, BackingT>
 ::add_with_spill(uint64_t pos, int result, TranspositionTableBase::Entry *spilled) {
     if (cache.add_with_spill(pos, result, spilled))
-	return backing.add_with_spill(spilled->pos, spilled->result, spilled);
+	return backing.add_with_spill(spilled->pos, int(spilled->result)-1, spilled);
     else
 	return false;
 }
