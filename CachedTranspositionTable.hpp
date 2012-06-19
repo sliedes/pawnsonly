@@ -13,8 +13,15 @@ class CachedTranspositionTable : public TranspositionTableBase {
 public:
     bool probe(uint64_t pos, int *result) override;
     void add(uint64_t pos, int result) override;
+    size_t get_capacity() const override;
     size_t size() const override;
+    bool is_empty_slot(uint64_t pos) const override;
 };
+
+template<typename CacheT, typename BackingT>
+bool CachedTranspositionTable<CacheT, BackingT>::is_empty_slot(uint64_t pos) const {
+    return cache.is_empty_slot(pos);
+}
 
 template<typename CacheT, typename BackingT>
 bool CachedTranspositionTable<CacheT, BackingT>::probe(uint64_t pos, int *result) {
@@ -46,6 +53,11 @@ bool CachedTranspositionTable<CacheT, BackingT>
 	return false;
 }
 
+
+template<typename CacheT, typename BackingT>
+size_t CachedTranspositionTable<CacheT, BackingT>::get_capacity() const {
+    return cache.get_capacity() + backing.get_capacity();
+}
 
 template<typename CacheT, typename BackingT>
 size_t CachedTranspositionTable<CacheT, BackingT>::size() const {

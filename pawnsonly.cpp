@@ -14,6 +14,8 @@
 #define DEBUG 1
 #define VERBOSE_DEPTH 5
 
+#define SAVE_NODES_LIMIT 100
+
 // # of 8-byte elements; try to choose a prime
 static const size_t TP_TABLE_SIZE = 536870909; // 4 gigabytes
 //static const size_t TP_TABLE_SIZE = 671088637; // 5 gigabytes
@@ -610,15 +612,19 @@ void test_do_undo_move() {
     }
 }
 
-//MemTranspositionTable<TP_TABLE_SIZE> tp_table;
-CachedTranspositionTable<MemTranspositionTable<30146531>, MemTranspositionTable<TP_TABLE_SIZE> > tp_table;
+MemTranspositionTable<TP_TABLE_SIZE> tp_table;
+//CachedTranspositionTable<MemTranspositionTable<30146531>, MemTranspositionTable<TP_TABLE_SIZE> > tp_table;
 
 struct {
     int curr_move;
     int num_moves;
 } depth_info[VERBOSE_DEPTH];
 
-int minimax(Pos *p, int depth) {
+static uint64_t node_count = 0;
+
+static int minimax(Pos *p, int depth) {
+    node_count++;
+
     Pos::Move moves[MAX_LEGAL_MOVES];
     int results[MAX_LEGAL_MOVES];
 
@@ -662,8 +668,15 @@ int minimax(Pos *p, int depth) {
 	//p->check_sanity();
 
 	if (!got_result) {
+	    uint64_t saved_node_count = node_count;
 	    results[i] = minimax(p, depth+1);
-	    tp_table.add(packed, results[i]);
+	    assert(saved_node_count <= node_count);
+	    saved_node_count = node_count - saved_node_count;
+	    if (saved_node_count > SAVE_NODES_LIMIT || tp_table.is_empty_slot(packed)) {
+		tp_table.add(packed, results[i]);
+		assert(node_count >= saved_node_count);
+		node_count -= saved_node_count;
+	    }
 	}
 
 	// if (depth <= VERBOSE_DEPTH) {
