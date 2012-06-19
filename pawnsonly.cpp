@@ -1,4 +1,5 @@
 #include "MemTranspositionTable.hpp"
+#include "CachedTranspositionTable.hpp"
 #include "binom.hpp"
 #include <iostream>
 #include <cassert>
@@ -609,7 +610,8 @@ void test_do_undo_move() {
     }
 }
 
-MemTranspositionTable<TP_TABLE_SIZE> tp_table;
+//MemTranspositionTable<TP_TABLE_SIZE> tp_table;
+CachedTranspositionTable<MemTranspositionTable<30146531>, MemTranspositionTable<TP_TABLE_SIZE> > tp_table;
 
 struct {
     int curr_move;

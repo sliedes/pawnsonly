@@ -13,13 +13,14 @@ public:
     MemTranspositionTable();
 
     // returns true and assigns result if found
-    int probe(uint64_t pos, int *result) const; // assigns -1, 0, 1
-    void add(uint64_t pos, int result);
-    size_t size() const; // estimate
+    bool probe(uint64_t pos, int *result) override; // assigns -1, 0, 1
+    void add(uint64_t pos, int result) override;
+    size_t size() const override; // estimate
+    bool add_with_spill(uint64_t pos, int result, TranspositionTableBase::Entry *spilled) override;
 };
 
 template<size_t CAPACITY>
-inline int MemTranspositionTable<CAPACITY>::probe(uint64_t pos, int *result) const {
+inline bool MemTranspositionTable<CAPACITY>::probe(uint64_t pos, int *result) {
     size_t h = TranspositionTable<CAPACITY>::hash(pos);
     if (tab[h].pos == pos) {
 	*result = int(tab[h].result)-1;
@@ -52,6 +53,24 @@ size_t MemTranspositionTable<CAPACITY>::size() const {
 	if (tab[i].result != 3)
 	    count++;
     return count*10240;
+}
+
+template<size_t CAPACITY>
+bool MemTranspositionTable<CAPACITY>::add_with_spill(uint64_t pos, int result,
+						     TranspositionTableBase::Entry *spilled) {
+    size_t h = TranspositionTable<CAPACITY>::hash(pos);
+    bool retval = false;
+
+    assert(pos >> 62 == 0);
+    assert(result >= -1 && result <= 1);
+    if (tab[h].pos == pos) {
+	*spilled = tab[h];
+	retval = true;
+    }
+
+    tab[h].pos = pos;
+    tab[h].result = result+1;
+    return retval;
 }
 
 
