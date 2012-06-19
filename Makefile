@@ -1,6 +1,6 @@
 CFLAGS=-std=gnu++11 -Wall -g -O3
 
-OBJS=pawnsonly.o MemTranspositionTable.o binom.o
+OBJS=pawnsonly.o binom.o
 
 .cpp.o:
 	gcc -c $< -o $@ $(CFLAGS)

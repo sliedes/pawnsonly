@@ -609,7 +609,7 @@ void test_do_undo_move() {
     }
 }
 
-MemTranspositionTable tp_table(TP_TABLE_SIZE);
+MemTranspositionTable<TP_TABLE_SIZE> tp_table;
 
 struct {
     int curr_move;
