@@ -234,7 +234,6 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	for (int i=NUM_ISQ-1; i>=0; i--)
 	    if (sq[i] == turn)
 		positions[num_pawns++] = i;
-
     }
 		
     assert(num_pawns <= N);
@@ -282,6 +281,7 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	    // may capture to right
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front+1;
+	    moves[num_moves].value = 2*rank+1;
 	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
 	    moves[num_moves].seq = 1 - captured_pawn_rank;
 	    moves[num_moves++].replacing = -turn;
