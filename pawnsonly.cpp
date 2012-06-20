@@ -12,7 +12,7 @@
 #include <vector>
 
 #define DEBUG 1
-#define VERBOSE_DEPTH 5
+#define VERBOSE_DEPTH 8
 
 //#define SAVE_NODES_LIMIT 50
 #define SAVE_LEVELS 1
@@ -142,6 +142,7 @@ class Pos {
     int turn; // 1 = white, -1 = black
     mutable int num_white = -1, num_black = -1; // calculated if/when needed
     int seq;
+    int canonized_player_flip; // -1 changed player in canonize, else -1
     // FIXME en passant square
     void force_count_pieces() const;
     void count_pieces() const { if (num_white == -1) force_count_pieces(); }
@@ -160,9 +161,12 @@ public:
     ostream &print(ostream &str) const;
     void random_position();
     void random_position(int nwhites, int nblacks);
-    int get_turn() const { return turn; }
+    int get_turn() const { return turn*canonized_player_flip; }
+    void canonize();
+    void horiz_mirror_board();
 
     int winner() const; // -1 if won by black, 1 if by white, 0 otherwise
+    int get_canonize_flip() const { return canonized_player_flip; }
 
     // a number that proceeds roughly sequentially per move
     // (at least from perspective of small modulos)
@@ -176,6 +180,60 @@ public:
 
     bool operator==(const Pos &) const;
 };
+
+void Pos::horiz_mirror_board() {
+    int left = 0, right = N-1;
+
+    while (left < right) {
+	for (int i=0; i<NUM_ISQ; i+=N) {
+	    int tmp = sq[left+i];
+	    sq[left+i] = sq[right+i];
+	    sq[right+i] = tmp;
+	}
+	left++;
+	right--;
+    }
+    //check_sanity();
+}
+
+void Pos::canonize() {
+    // Canonize so that white is always to move
+    if (turn == -1) {
+	turn = 1;
+	canonized_player_flip = -canonized_player_flip;
+	for (int from=0, to=NUM_ISQ-1; from < to; from++, to--) {
+	    int tmp = sq[from];
+	    sq[from] = -sq[to];
+	    sq[to] = -tmp;
+	}
+	if (NUM_ISQ%2 == 1)
+	    sq[NUM_ISQ/2] = -sq[NUM_ISQ/2];
+	int tmp = num_white;
+	num_white = num_black;
+	num_black = tmp;
+	//check_sanity();
+    }
+
+    // Now possibly mirror the board horizontally
+    bool horiz_done = false;
+    for (int y=0; y<NUM_RANKS && !horiz_done; y++) {
+	int left = SQ(0,y);
+	int right = left+N-1;
+	while (left < right) {
+	    if (sq[left] < sq[right]) {
+		horiz_mirror_board();
+		horiz_done = true;
+		break;
+	    } else if (sq[left] > sq[right]) {
+		horiz_done = true;
+		break;
+	    } else {
+		left++;
+		right--;
+	    }
+	}
+    }
+}
 
 ostream &operator<<(ostream &os, const Pos::Move &move) {
     os << sqname(move.from);
@@ -222,8 +280,13 @@ void Pos::undo_move(const Move &move) {
 int Pos::get_legal_moves(Pos::Move *moves) const {
     int positions[N], num_pawns = 0, num_moves = 0;
 
+    //print(cerr);
+
     if (winner() != 0)
 	return 0;
+
+    // for (int i=0; i<MAX_LEGAL_MOVES; i++)
+    // 	moves[i].value = 999;
 
     // try to return potentially more useful moves first
     if (turn == -1) {
@@ -292,6 +355,8 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 
     for (int i=0; i<num_moves-1; i++)
     	for (int j=i+1; j<num_moves; j++) {
+	    assert(moves[i].value != 999);
+	    assert(moves[j].value != 999);
     	    if (moves[j].value > moves[i].value) {
     		Move tmp = moves[i];
     		moves[i] = moves[j];
@@ -309,9 +374,9 @@ int Pos::winner() const {
 
     if (num_white == 0) {
 	assert(num_black > 0);
-	return -1;
+	return -1*canonized_player_flip;
     } else if (num_black == 0)
-	return 1;
+	return canonized_player_flip;
 
     if (turn == 1)
 	base = SQ(0, NUM_RANKS-1);
@@ -321,7 +386,7 @@ int Pos::winner() const {
     }
     for (int i=0; i<N; i++)
 	if (sq[base+i] == turn)
-	    return turn;
+	    return turn*canonized_player_flip;
     return 0;
 }
 
@@ -369,6 +434,8 @@ Pos::Pos() {
     turn = 1;
 
     seq = 0;
+
+    canonized_player_flip = 1;
 
     count_pieces();
 }
@@ -688,37 +755,53 @@ static int minimax(Pos *p, int depth) {
 	}
 	p->do_move(moves[i]);
 
+	Pos canonized(*p);
+	// cerr << "Before canonize:" << endl;
+	// canonized.print(cerr);
+	canonized.canonize();
+	assert(canonized.get_turn() == -turn);
+	// cerr << "After canonize:" << endl;
+	// canonized.print(cerr);
+	// cerr << "------------------------------------------------------------" << endl;
+	assert(p->sequential() == canonized.sequential());
+
 	pos_t packed = 0;
 	bool got_result = false;
-	bool tp_eligible = p->sequential() % SAVE_LEVELS == 0;
+	bool tp_eligible = canonized.sequential() % SAVE_LEVELS == 0;
 
 	if (tp_eligible) {
-	    packed = p->pack();
-	    if (tp_table.probe(packed, &results[i]))
+	    packed = canonized.pack();
+	    //assert(packed%2 == 0);
+	    //packed /= 2;
+	    if (tp_table.probe(packed, &results[i])) {
+		results[i] *= canonized.get_canonize_flip();
 		got_result = true;
+	    }
 	}
 
 	//p->check_sanity();
 
 	if (!got_result) {
 	    uint64_t saved_node_count = node_count;
-	    results[i] = minimax(p, depth+1);
+	    results[i] = minimax(&canonized, depth+1);
 	    if (tp_eligible) {
 		assert(saved_node_count <= node_count);
 		saved_node_count = node_count - saved_node_count;
-		tp_table.add(packed, results[i]);
+		tp_table.add(packed, results[i]*canonized.get_canonize_flip());
 		assert(node_count >= saved_node_count);
 		node_count -= saved_node_count;
 	    }
 	}
 
-	// if (depth <= VERBOSE_DEPTH) {
-	//     cout << "Depth " << depth << ": move "
-	// 	 << i+1 << "/" << num_legal_moves << " RESULT=" << results[i] << endl;
-	//     size_t a = tp_table.size();
-	//     cout << "Transposition table size = " << a << " ("
-	// 	 << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
-	// }
+	if (depth == 1) {
+	    cout << "Depth " << depth << ": move "
+		 << i+1 << "/" << num_legal_moves << " RESULT=" << results[i]
+		 << "  CANON=" << canonized.pack() << endl;
+	    //canonized.print(cout);
+	    size_t a = tp_table.size();
+	    cout << "Transposition table size = " << a << " ("
+		 << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
+	}
 
 	//cout << "Undoing move " << moves[i] << endl;
 	p->undo_move(moves[i]);
@@ -741,6 +824,10 @@ int main() {
 
     //map<pos_t, int> tp_table;
     Pos p;
+    // Pos::Move m[MAX_LEGAL_MOVES];
+    // p.get_legal_moves(m);
+    // p.do_move(m[6]);
+    // p.canonize();
     int result = minimax(&p, 1);
     
     cout << "result=" << result << endl;
