@@ -25,7 +25,7 @@ public:
 template<size_t CAPACITY>
 class TranspositionTable : public TranspositionTableBase {
 protected:
-    size_t hash(uint64_t pos) const { return pos%CAPACITY; }
+    size_t hash(uint64_t pos) const { return pos*21538613260663%CAPACITY; }
 public:
     static constexpr size_t capacity = CAPACITY;
     size_t get_capacity() const override { return capacity; }

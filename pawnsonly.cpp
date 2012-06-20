@@ -14,12 +14,14 @@
 #define DEBUG 1
 #define VERBOSE_DEPTH 5
 
-#define SAVE_NODES_LIMIT 100
+//#define SAVE_NODES_LIMIT 50
+#define SAVE_LEVELS 1
 
 // # of 8-byte elements; try to choose a prime
-static const size_t TP_TABLE_SIZE = 536870909; // 4 gigabytes
+//static const size_t TP_TABLE_SIZE = 536870909; // 4 gigabytes
 //static const size_t TP_TABLE_SIZE = 671088637; // 5 gigabytes
 //static const size_t TP_TABLE_SIZE = 134217689; // 1 gigabyte
+static const size_t TP_TABLE_SIZE = 268435399; // 2 gigabytes
 //static const size_t TP_TABLE_SIZE = 9614669;
 //static const size_t TP_TABLE_SIZE = 30146531; // 230 megabytes
 
@@ -139,6 +141,7 @@ class Pos {
     int sq[NUM_ISQ]; // 1 = white, -1 = black, 0 = empty
     int turn; // 1 = white, -1 = black
     mutable int num_white = -1, num_black = -1; // calculated if/when needed
+    int seq;
     // FIXME en passant square
     void force_count_pieces() const;
     void count_pieces() const { if (num_white == -1) force_count_pieces(); }
@@ -147,7 +150,7 @@ public:
     // 'replacing' = the contents of the square moved to
     // (so this information is enough to undo the move)
     struct Move {
-	int from, to, replacing, value;
+	int from, to, replacing, value, seq;
     };
 
     Pos(); // initial position
@@ -160,6 +163,10 @@ public:
     int get_turn() const { return turn; }
 
     int winner() const; // -1 if won by black, 1 if by white, 0 otherwise
+
+    // a number that proceeds roughly sequentially per move
+    // (at least from perspective of small modulos)
+    int sequential() const { return seq; }
 
     // have space for MAX_LEGAL_MOVES. Returns count.
     int get_legal_moves(Move *moves) const;
@@ -185,6 +192,7 @@ void Pos::do_move(const Move &move) {
     assert(sq[move.to] == move.replacing);
     sq[move.from] = 0;
     sq[move.to] = turn;
+    seq += move.seq;
     if (move.replacing) {
 	assert(move.replacing == -turn);
 	if (turn == 1)
@@ -201,6 +209,7 @@ void Pos::undo_move(const Move &move) {
     assert(sq[move.from] == 0);
     sq[move.from] = turn;
     sq[move.to] = move.replacing;
+    seq -= move.seq;
     if (move.replacing) {
 	assert(move.replacing == -turn);
 	if (turn == 1)
@@ -237,12 +246,13 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	int front = s + turn*N; // sq in front of current
 	int rank = s/N;
 	if (turn == -1)
-	    rank = NUM_RANKS-1-rank;
+	    rank = RANK_BLACK-rank;
 	if (sq[front] == 0) {
 	    // front square empty, add it
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front;
 	    moves[num_moves].value = 2*rank+1;
+	    moves[num_moves].seq = 1;
 	    moves[num_moves++].replacing = 0;
 	    if (N >= 5 && rank == 0) {
 		// move ahead 2 squares?
@@ -253,16 +263,19 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 		    moves[num_moves].from = s;
 		    moves[num_moves].to = front2;
 		    moves[num_moves].value = 4*rank+4;
+		    moves[num_moves].seq = 2;
 		    moves[num_moves++].replacing = 0;
 		}
 	    }
 	}
+	int captured_pawn_rank = RANK_BLACK-(rank+1);
 	if (file != 0 && sq[front-1] == -turn) {
 	    // may capture to left
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front-1;
 	    moves[num_moves].value = 2*rank+1;
 	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
+	    moves[num_moves].seq = 1 - captured_pawn_rank;
 	    moves[num_moves++].replacing = -turn;
 	}
 	if (file != N-1 && sq[front+1] == -turn) {
@@ -270,6 +283,7 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front+1;
 	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
+	    moves[num_moves].seq = 1 - captured_pawn_rank;
 	    moves[num_moves++].replacing = -turn;
 	}
     }
@@ -353,6 +367,8 @@ Pos::Pos() {
 	sq[SQ(i, RANK_BLACK)] = -1;
     }
     turn = 1;
+
+    seq = 0;
 
     count_pieces();
 }
@@ -457,6 +473,20 @@ void Pos::check_sanity() {
     int wc = num_white, bc = num_black;
     assert(wc == num_white);
     assert(bc == num_black);
+
+    int s = 0;
+    for (int i=0; i<NUM_ISQ; i++) {
+	if (sq[i] == 1)
+	    s += i/N;
+	else if (sq[i] == -1)
+	    s += (NUM_RANKS-1-i/N);
+    }
+
+    if (seq != s) {
+	cerr << "seq != s: " << seq << " != " << s << endl;
+	print(cerr);
+	abort();
+    }
 }
 
 ostream &Pos::print(ostream &str) const {
@@ -657,22 +687,25 @@ static int minimax(Pos *p, int depth) {
 	    // 	 << i+1 << "/" << num_legal_moves << "... " << endl;
 	}
 	p->do_move(moves[i]);
+
 	pos_t packed = 0;
-
 	bool got_result = false;
+	bool tp_eligible = p->sequential() % SAVE_LEVELS == 0;
 
-	packed = p->pack();
-	if (tp_table.probe(packed, &results[i]))
-	    got_result = true;
+	if (tp_eligible) {
+	    packed = p->pack();
+	    if (tp_table.probe(packed, &results[i]))
+		got_result = true;
+	}
 
 	//p->check_sanity();
 
 	if (!got_result) {
 	    uint64_t saved_node_count = node_count;
 	    results[i] = minimax(p, depth+1);
-	    assert(saved_node_count <= node_count);
-	    saved_node_count = node_count - saved_node_count;
-	    if (saved_node_count > SAVE_NODES_LIMIT || tp_table.is_empty_slot(packed)) {
+	    if (tp_eligible) {
+		assert(saved_node_count <= node_count);
+		saved_node_count = node_count - saved_node_count;
 		tp_table.add(packed, results[i]);
 		assert(node_count >= saved_node_count);
 		node_count -= saved_node_count;
