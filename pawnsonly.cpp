@@ -12,18 +12,20 @@
 #include <vector>
 
 #define DEBUG 1
-#define VERBOSE_DEPTH 8
+#define VERBOSE_DEPTH 5
 
 //#define SAVE_NODES_LIMIT 50
 #define SAVE_LEVELS 1
 
 // # of 8-byte elements; try to choose a prime
-//static const size_t TP_TABLE_SIZE = 536870909; // 4 gigabytes
-//static const size_t TP_TABLE_SIZE = 671088637; // 5 gigabytes
-//static const size_t TP_TABLE_SIZE = 134217689; // 1 gigabyte
-static const size_t TP_TABLE_SIZE = 268435399; // 2 gigabytes
+//static const size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
+//static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
+static const size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
+//static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
+//static const size_t TP_TABLE_SIZE = 134217689; // .5 gigabytes
+//static const size_t TP_TABLE_SIZE = 268435399; // 1 gigabyte
 //static const size_t TP_TABLE_SIZE = 9614669;
-//static const size_t TP_TABLE_SIZE = 30146531; // 230 megabytes
+//static const size_t TP_TABLE_SIZE = 30146531; // 115 megabytes
 
 using std::ostream;
 using std::cout;
@@ -152,6 +154,9 @@ public:
     // (so this information is enough to undo the move)
     struct Move {
 	int from, to, replacing, value, seq;
+
+	// used to remove symmetric moves if Pos::is_horiz_symmetric() returns true
+	bool is_from_right_half() const { return from >= (N+1)/2; }
     };
 
     Pos(); // initial position
@@ -164,6 +169,7 @@ public:
     int get_turn() const { return turn*canonized_player_flip; }
     void canonize();
     void horiz_mirror_board();
+    bool is_horiz_symmetric() const;
 
     int winner() const; // -1 if won by black, 1 if by white, 0 otherwise
     int get_canonize_flip() const { return canonized_player_flip; }
@@ -180,6 +186,19 @@ public:
 
     bool operator==(const Pos &) const;
 };
+
+bool Pos::is_horiz_symmetric() const {
+    int left = 0, right = N-1;
+
+    while (left < right) {
+	for (int i=0; i<NUM_ISQ; i+=N)
+	    if (sq[left+i] != sq[right+i])
+		return false;
+	left++;
+	right--;
+    }
+    return true;
+}
 
 void Pos::horiz_mirror_board() {
     int left = 0, right = N-1;
@@ -728,15 +747,24 @@ static int minimax(Pos *p, int depth) {
     int turn = p->get_turn();
     int num_legal_moves = p->get_legal_moves(moves);
 
-    if (depth <= VERBOSE_DEPTH)
-	depth_info[depth-1].num_moves = num_legal_moves;
-
     //p->print(cout);
 
     if (num_legal_moves == 0) {
 	//cout << "Game over." << endl;
 	return p->winner();
     }
+
+    bool is_horiz_symm = p->is_horiz_symmetric();
+    if (is_horiz_symm) {
+	int p = 0;
+	for (int i=0; i<num_legal_moves; i++)
+	    if (!moves[i].is_from_right_half())
+		moves[p++] = moves[i];
+	num_legal_moves = p;
+    }
+
+    if (depth <= VERBOSE_DEPTH)
+	depth_info[depth-1].num_moves = num_legal_moves;
 
     for (int i=0; i<num_legal_moves; i++) {
 	//cout << "Taking move " << moves[i] << endl;
