@@ -14,13 +14,16 @@
 #define DEBUG 1
 #define VERBOSE_DEPTH 5
 
+// board size (number of pawns per side). Must be >= 4.
+static const int N = 7;
+
 //#define SAVE_NODES_LIMIT 50
 #define SAVE_LEVELS 1
 
 // # of 8-byte elements; try to choose a prime
 //static const size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
-//static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
-static const size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
+static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
+//static const size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
 //static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
 //static const size_t TP_TABLE_SIZE = 134217689; // .5 gigabytes
 //static const size_t TP_TABLE_SIZE = 268435399; // 1 gigabyte
@@ -34,8 +37,6 @@ using std::cerr;
 using std::string;
 using std::stringstream;
 
-// board size (number of pawns per side). Must be >= 4.
-static const int N = 7;
 
 // number of internal ranks (i.e. those on which pawns can be
 // without the game being over)
@@ -149,6 +150,8 @@ class Pos {
     void force_count_pieces() const;
     void count_pieces() const { if (num_white == -1) force_count_pieces(); }
     void clear();
+    // check if a hypothetical pawn at a square is unstoppable
+    bool is_unstoppable(int sq) const;
 public:
     // 'replacing' = the contents of the square moved to
     // (so this information is enough to undo the move)
@@ -186,6 +189,36 @@ public:
 
     bool operator==(const Pos &) const;
 };
+
+// check if a hypothetical pawn at a square is unstoppable
+bool Pos::is_unstoppable(int s) const {
+    int file = s%N;
+    if (file != 0 && file != N-1) {
+	if (turn == 1) {
+	    for (int s2=s+N; s2<NUM_ISQ; s2+=N)
+		if (sq[s2-1] != 0 || sq[s2] != 0 || sq[s2+1] != 0)
+		    return false;
+	} else
+	    for (int s2=s-N; s2>=0; s2-=N)
+		if (sq[s2-1] != 0 || sq[s2] != 0 || sq[s2+1] != 0)
+		    return false;
+    } else {
+	int othersq;
+	if (file == 0)
+	    othersq = 1;
+	else
+	    othersq = -1;
+	if (turn == 1) {
+	    for (int s2=s+N; s2<NUM_ISQ; s2+=N)
+		if (sq[s2] != 0 || sq[s2+othersq] != 0)
+		    return false;
+	} else
+	    for (int s2=s-N; s2>=0; s2-=N)
+		if (sq[s2] != 0 || sq[s2+othersq] != 0)
+		    return false;
+    }
+    return true;
+}
 
 bool Pos::is_horiz_symmetric() const {
     int left = 0, right = N-1;
@@ -320,7 +353,10 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 		
     assert(num_pawns <= N);
 
-    // evaluation function: sum of ranks of pawns squared
+    // evaluation function: sum of ranks of pawns squared +
+    // 100*(2+rank) for best unstoppable pawn
+
+    int best_unstoppable = -1, best_unstoppable_rank = -1;
 
     for (int i=0; i<num_pawns; i++) {
 	int s = positions[i], file = s%N;
@@ -333,6 +369,10 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front;
 	    moves[num_moves].value = 2*rank+1;
+	    if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
+		best_unstoppable = num_moves;
+		best_unstoppable_rank = rank+1;
+	    }
 	    moves[num_moves].seq = 1;
 	    moves[num_moves++].replacing = 0;
 	    if (N >= 5 && rank == 0) {
@@ -344,6 +384,10 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 		    moves[num_moves].from = s;
 		    moves[num_moves].to = front2;
 		    moves[num_moves].value = 4*rank+4;
+		    if (rank+2 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
+			best_unstoppable = num_moves;
+			best_unstoppable_rank = rank+2;
+		    }
 		    moves[num_moves].seq = 2;
 		    moves[num_moves++].replacing = 0;
 		}
@@ -356,6 +400,10 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	    moves[num_moves].to = front-1;
 	    moves[num_moves].value = 2*rank+1;
 	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
+	    if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
+		best_unstoppable = num_moves;
+		best_unstoppable_rank = rank+1;
+	    }
 	    moves[num_moves].seq = 1 - captured_pawn_rank;
 	    moves[num_moves++].replacing = -turn;
 	}
@@ -365,12 +413,19 @@ int Pos::get_legal_moves(Pos::Move *moves) const {
 	    moves[num_moves].to = front+1;
 	    moves[num_moves].value = 2*rank+1;
 	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
+	    if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
+		best_unstoppable = num_moves;
+		best_unstoppable_rank = rank+1;
+	    }
 	    moves[num_moves].seq = 1 - captured_pawn_rank;
 	    moves[num_moves++].replacing = -turn;
 	}
     }
 
     assert(num_moves <= MAX_LEGAL_MOVES);
+
+    if (best_unstoppable != -1)
+	moves[best_unstoppable].value += 100*(2+best_unstoppable_rank);
 
     for (int i=0; i<num_moves-1; i++)
     	for (int j=i+1; j<num_moves; j++) {
