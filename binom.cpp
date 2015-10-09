@@ -1,7 +1,8 @@
 #include "binom.hpp"
+#include <array>
 #include <cstring>
 
-uint64_t binom_tab[BINOM_MAX][BINOM_MAX];
+std::array<std::array<uint64_t, BINOM_MAX>, BINOM_MAX> binom_tab;
 
 // static inline uint64_t __attribute__ ((unused)) binom_rec(int n, int k) {
 //     assert(n >= 0);
@@ -21,7 +22,9 @@ void init_binom() {
 	return;
     is_init = true;
 
-    memset(binom_tab, 0, sizeof(binom_tab));
+    // std::array is guaranteed to be layout compatible with C array
+    memset(binom_tab.data(), 0, sizeof(binom_tab));
+
     binom_tab[0][0] = 1;
     for (int n=1; n<BINOM_MAX; n++)
 	for (int k=0; k<BINOM_MAX; k++) {

@@ -1,12 +1,13 @@
 #ifndef binom_hpp
 #define binom_hpp
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 
 #define BINOM_MAX 48
 
-extern uint64_t binom_tab[BINOM_MAX][BINOM_MAX];
+extern std::array<std::array<uint64_t, BINOM_MAX>, BINOM_MAX> binom_tab;
 
 void init_binom();
 

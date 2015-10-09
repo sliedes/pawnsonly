@@ -1,16 +1,17 @@
 #include "MemTranspositionTable.hpp"
 #include "CachedTranspositionTable.hpp"
 #include "binom.hpp"
-#include <iostream>
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <cstdint>
-#include <cmath>
-#include <algorithm>
+#include <ctime>
+#include <iostream>
 #include <sstream>
 #include <vector>
-#include <ctime>
 
 #define DEBUG 1
 #define VERBOSE_DEPTH 5
@@ -30,13 +31,13 @@ static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
 //static const size_t TP_TABLE_SIZE = 9614669;
 //static const size_t TP_TABLE_SIZE = 30146531; // 115 megabytes
 
-using std::ostream;
+using std::array;
+using std::cerr;
 using std::cout;
 using std::endl;
-using std::cerr;
+using std::ostream;
 using std::string;
 using std::stringstream;
-
 
 // number of internal ranks (i.e. those on which pawns can be
 // without the game being over)
@@ -102,12 +103,12 @@ static string sqname(int sq) {
     return sqname(sq%N, sq/N);
 }
 
-// Singleton; 
+// Singleton
 class Compact_tab {
 private:
     static Compact_tab *instance;
     static constexpr int SIZE = (N+1)*(N+1);
-    uint64_t tab[SIZE];
+    array<uint64_t, SIZE> tab;
 public:
     Compact_tab();
     uint64_t operator[](int n) const {
@@ -125,7 +126,7 @@ public:
     int num_black(int idx) const { return (idx+1)%(N+1); }
     // returns the index of the last element <= n
     int find(uint64_t n) const {
-	return std::upper_bound(tab, tab+SIZE, n) - tab - 1;
+	return std::upper_bound(&tab[0], &tab[SIZE], n) - tab.begin() - 1;
     }
 } ranks_tab;
 
@@ -152,11 +153,11 @@ Compact_tab::Compact_tab() {
 }
 
 class Pos {
-    int sq[NUM_ISQ]; // 1 = white, -1 = black, 0 = empty
+    array<int, NUM_ISQ> sq; // 1 = white, -1 = black, 0 = empty
     int turn; // 1 = white, -1 = black
     mutable int num_white = -1, num_black = -1; // calculated if/when needed
     int seq;
-    int canonized_player_flip; // -1 changed player in canonize, else -1
+    int canonized_player_flip; // -1 changed player in canonize, else 1
     // FIXME en passant square
     void force_count_pieces() const;
     void count_pieces() const { if (num_white == -1) force_count_pieces(); }
@@ -192,8 +193,8 @@ public:
     // (at least from perspective of small modulos)
     int sequential() const { return seq; }
 
-    // have space for MAX_LEGAL_MOVES. Returns count.
-    int get_legal_moves(Move *moves) const;
+    // Returns count.
+    int get_legal_moves(array<Move, MAX_LEGAL_MOVES> &moves) const;
 
     void do_move(const Move &move);
     void undo_move(const Move &move);
@@ -340,8 +341,9 @@ void Pos::undo_move(const Move &move) {
     }
 }
 
-int Pos::get_legal_moves(Pos::Move *moves) const {
-    int positions[N], num_pawns = 0, num_moves = 0;
+int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
+    array<int, N> positions;
+    int num_pawns = 0, num_moves = 0;
 
     //print(cerr);
 
@@ -528,17 +530,17 @@ Pos::Pos() {
 pos_t Pos::pack() const {
     count_pieces();
     uint64_t base = ranks_tab.base(num_white, num_black);
-    int squares[N];
+    array<int, N> squares;
     
     for (int i=0, p=0; p<num_white; i++)
 	if (sq[i] == 1)
 	    squares[p++] = i;
-    uint64_t whites_rank = rank_combination(squares, num_white);
+    uint64_t whites_rank = rank_combination(squares.data(), num_white);
 
     for (int i=0, p=0; p<num_black; i++)
 	if (sq[i] == -1)
 	    squares[p++] = i;
-    uint64_t blacks_rank = rank_combination(squares, num_black);
+    uint64_t blacks_rank = rank_combination(squares.data(), num_black);
 
     uint64_t offset = whites_rank;
     offset = offset * binom(NUM_ISQ, num_black) + blacks_rank;
@@ -599,15 +601,15 @@ Pos::Pos(pos_t compact) {
     uint64_t blacks_rank = offset%b;
     uint64_t whites_rank = offset/b;
 
-    int squares[N];
-    unrank_combination(squares, num_white, whites_rank);
+    array<int, N> squares;
+    unrank_combination(squares.data(), num_white, whites_rank);
     for (int i=0; i<num_white; i++) {
 	assert(squares[i] >= 0);
 	assert(squares[i] < NUM_ISQ);
 	sq[squares[i]] = 1;
     }
 
-    unrank_combination(squares, num_black, blacks_rank);
+    unrank_combination(squares.data(), num_black, blacks_rank);
     for (int i=0; i<num_black; i++) {
 	assert(squares[i] >= 0);
 	assert(squares[i] < NUM_ISQ);
@@ -642,7 +644,7 @@ void Pos::check_sanity() {
 }
 
 ostream &Pos::print(ostream &str) const {
-    char delim[N*2+2];
+    array<char, N*2+2> delim;
 
     for (int i=0; i<N; i++) {
 	delim[i*2] = '+';
@@ -652,7 +654,7 @@ ostream &Pos::print(ostream &str) const {
     delim[N*2+1] = 0;
 
     for (int y=N-1; y >= 0; y--) {
-	str << delim << "\n";
+	str << delim.data() << "\n";
 	str << "|";
 	for (int x=0; x < N; x++) {
 	    if (y == 0 || y == N-1)
@@ -668,7 +670,7 @@ ostream &Pos::print(ostream &str) const {
 	    str << "   " << player_name(turn) << " to move";
 	str << "\n";
     }
-    str << delim << "\n";
+    str << delim.data() << "\n";
     return str;
 }
 
@@ -759,7 +761,7 @@ void test_do_undo_move() {
 	Pos p;
 	p.random_position();
 	Pos origpos(p);
-	Pos::Move moves[MAX_LEGAL_MOVES];
+	array<Pos::Move, MAX_LEGAL_MOVES> moves;
 	position_number = p.pack();
 	// if (position_number == 20137260669466283LL)
 	//     verbose=1;
@@ -797,18 +799,20 @@ void test_do_undo_move() {
 MemTranspositionTable<TP_TABLE_SIZE> tp_table;
 //CachedTranspositionTable<MemTranspositionTable<30146531>, MemTranspositionTable<TP_TABLE_SIZE> > tp_table;
 
-struct {
+struct DepthInfo {
     int curr_move;
     int num_moves;
-} depth_info[VERBOSE_DEPTH];
+};
+
+static array<DepthInfo, VERBOSE_DEPTH> depth_info;
 
 static uint64_t node_count = 0;
 
 static int minimax(Pos *p, int depth) {
     node_count++;
 
-    Pos::Move moves[MAX_LEGAL_MOVES];
-    int results[MAX_LEGAL_MOVES];
+    array<Pos::Move, MAX_LEGAL_MOVES> moves;
+    array<int, MAX_LEGAL_MOVES> results;
 
     int turn = p->get_turn();
     int num_legal_moves = p->get_legal_moves(moves);
@@ -919,7 +923,7 @@ int main() {
 
     //map<pos_t, int> tp_table;
     Pos p;
-    // Pos::Move m[MAX_LEGAL_MOVES];
+    // array<Pos::Move, MAX_LEGAL_MOVES> m;
     // p.get_legal_moves(m);
     // p.do_move(m[6]);
     // p.canonize();
