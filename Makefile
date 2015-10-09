@@ -1,9 +1,9 @@
-CFLAGS=-std=gnu++11 -Wall -g -O3
+CXXFLAGS=-std=gnu++11 -Wall -g -O3
 
 OBJS=pawnsonly.o binom.o FileBackedTranspositionTable.o
 
 .cpp.o:
-	gcc -c $< -o $@ $(CFLAGS)
+	gcc -c $< -o $@ $(CXXFLAGS)
 
 pawnsonly: $(OBJS)
 	g++ $^ -o $@ $(LDFLAGS)
