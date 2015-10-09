@@ -10,10 +10,10 @@
 #include <algorithm>
 #include <sstream>
 #include <vector>
+#include <ctime>
 
 #define DEBUG 1
 #define VERBOSE_DEPTH 5
-
 // board size (number of pawns per side). Must be >= 4.
 static const int N = 7;
 
@@ -54,6 +54,17 @@ static const int MAX_LEGAL_MOVES = N*3;
 
 // compactly represented position
 typedef uint64_t pos_t;
+
+class Timer {
+    time_t start;
+public:
+    Timer() { start = time(NULL); }
+    unsigned long elapsed() const { return time(NULL)-start; }
+} timer;
+
+static ostream &operator<<(ostream &str, const Timer &t) {
+    return str << "[" << t.elapsed() << "]";
+}
 
 const char *player_name(int player) {
     if (player == 1)
@@ -826,6 +837,7 @@ static int minimax(Pos *p, int depth) {
 	//p->check_sanity();
 	if (depth <= VERBOSE_DEPTH) {
 	    depth_info[depth-1].curr_move = i+1;
+	    cout << timer << "\t";
 	    for (int j=0; j<depth; j++) {
 		cout << depth_info[j].curr_move << "/"
 		     << depth_info[j].num_moves << "\t";
@@ -877,12 +889,12 @@ static int minimax(Pos *p, int depth) {
 	}
 
 	if (depth == 1) {
-	    cout << "Depth " << depth << ": move "
+	    cout << timer << "\tDepth " << depth << ": move "
 		 << i+1 << "/" << num_legal_moves << " RESULT=" << results[i]
 		 << "  CANON=" << canonized.pack() << endl;
 	    //canonized.print(cout);
 	    size_t a = tp_table.size();
-	    cout << "Transposition table size = " << a << " ("
+	    cout << timer << "\tTransposition table size = " << a << " ("
 		 << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
 	}
 
@@ -913,5 +925,5 @@ int main() {
     // p.canonize();
     int result = minimax(&p, 1);
     
-    cout << "result=" << result << endl;
+    cout << timer << "\tresult=" << result << endl;
 }
