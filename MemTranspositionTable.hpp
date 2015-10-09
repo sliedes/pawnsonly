@@ -29,7 +29,7 @@ MemTranspositionTable<CAPACITY>::MemTranspositionTable() {
 
 template<size_t CAPACITY>
 size_t MemTranspositionTable<CAPACITY>::size() const {
-    size_t count=0;
+    size_t count = 0;
     for (size_t i=0; i<CAPACITY/10240; i++)
 	if (tab[i].result != 3)
 	    count++;

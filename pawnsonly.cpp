@@ -137,7 +137,7 @@ Compact_tab::Compact_tab() {
 
     init_binom();
 
-    int p=0;
+    int p = 0;
     tab[p++] = 0;
     for (int white=0; white<=N; white++)
 	for (int black=0; black<=N; black++) {
@@ -681,14 +681,14 @@ void Pos::clear() {
 }
 
 void Pos::random_position() {
-    int w=0,b=0;
+    int w = 0,b = 0;
     do {
 	int r = rand();
 	w = r % N;
 	r /= N;
 	b = r%N;
     } while (w == 0 && b == 0);
-    random_position(w,b);
+    random_position(w, b);
 }
 
 void Pos::random_position(int nw, int nb) {
@@ -734,7 +734,7 @@ void count_boards() {
 }
 
 void test_pack_unpack() {
-    int i=0;
+    int i = 0;
     while (true) {
 	Pos p;
 	p.random_position();
@@ -755,8 +755,8 @@ void test_pack_unpack() {
 
 void test_do_undo_move() {
     pos_t position_number;
-    int count=0;
-    int verbose=0;
+    int count = 0;
+    int verbose = 0;
     while (true) {
 	Pos p;
 	p.random_position();
