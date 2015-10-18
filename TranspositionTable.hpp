@@ -36,7 +36,7 @@ protected:
     //size_t hash(uint64_t pos) const { return pos*21538613260663%CAPACITY; }
     size_t hash(uint64_t pos) const { return pos%CAPACITY; }
     virtual void write_entry(size_t n, const TranspositionTableBase::Entry &entry) = 0;
-    virtual void read_entry(size_t n, TranspositionTableBase::Entry *entry) const = 0;
+    virtual TranspositionTableBase::Entry read_entry(size_t n) const = 0;
     saved_pos_t pos_to_saved(uint64_t pos) const override;
     uint64_t saved_to_pos(saved_pos_t saved, size_t hash_slot) const override;
 public:
@@ -65,15 +65,15 @@ uint64_t TranspositionTable<CAPACITY>::saved_to_pos(saved_pos_t a, size_t hash_s
 
 template<size_t CAPACITY>
 bool TranspositionTable<CAPACITY>::is_empty_slot(uint64_t pos) const {
-    Entry e;
-    read_entry(hash(pos), &e);
+    Entry e = read_entry(hash(pos));
     return e.result == 3;
 }
 
 template<size_t CAPACITY>
 inline bool TranspositionTable<CAPACITY>::probe(uint64_t pos, int *result) {
-    Entry e;
-    read_entry(hash(pos), &e);
+    Entry e = read_entry(hash(pos));
+    if (e.result == 3)
+	return 0;
     saved_pos_t saved_pos = pos_to_saved(pos);
     if (e.pos == saved_pos) {
 	*result = int(e.result)-1;
@@ -103,8 +103,7 @@ bool TranspositionTable<CAPACITY>::add_with_spill(uint64_t pos, int result,
     size_t h = hash(pos);
     bool retval = false;
 
-    Entry e;
-    read_entry(h, &e);
+    Entry e = read_entry(h);
 
     if (e.result != 3 && e.pos != saved_pos) {
 	*spilled = e;
@@ -131,8 +130,7 @@ void TranspositionTable<CAPACITY>::save(const char *fname) const {
 
     // FIXME slow
     for (size_t i = 0; i < CAPACITY; i++) {
-	Entry e;
-	read_entry(i, &e);
+	Entry e = read_entry(i);
 	size_t res = fwrite(&e, sizeof(e), 1, fp);
 	assert(res == 1 && "Short write");
     }

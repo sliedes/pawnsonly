@@ -13,8 +13,8 @@ protected:
     void write_entry(size_t n, const TranspositionTableBase::Entry &entry) override {
 	tab[n] = entry;
     }
-    void read_entry(size_t n, TranspositionTableBase::Entry *entry) const override {
-	*entry = tab[n];
+    TranspositionTableBase::Entry read_entry(size_t n) const override {
+	return tab[n];
     }
 public:
     MemTranspositionTable();
