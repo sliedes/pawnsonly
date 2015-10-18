@@ -3,25 +3,38 @@
 #include "binom.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <iostream>
 #include <fstream>
+#include <iostream>
+#include <mutex>
 #include <signal.h>
 #include <sstream>
+#include <thread>
 #include <vector>
 
-#define DEBUG 1
-#define VERBOSE_DEPTH 9
+static constexpr bool DEBUG = true;
+
+//static constexpr int N = 7;
+//static constexpr int VERBOSE_DEPTH = 3;
+//static constexpr int PARALLEL_DEPTH = 3;
+
+static constexpr int N = 8;
+static constexpr int VERBOSE_DEPTH = 7;
+static constexpr int PARALLEL_DEPTH = 4;
+
 // board size (number of pawns per side). Must be >= 4.
-static const int N = 8;
+
+static constexpr int NUM_THREADS = 8;
 
 //#define SAVE_NODES_LIMIT 50
-#define SAVE_LEVELS 1
+//static constexpr int SAVE_LEVELS = 1;
 
 // # of 8-byte elements; try to choose a prime
 //static const size_t TP_TABLE_SIZE = 30146531; // 115 megabytes
@@ -30,18 +43,29 @@ static const int N = 8;
 //static const size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
 //static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
 //static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
-//static const size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
+//static constexpr size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
 //static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
 static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
 
 using std::array;
+using std::atomic;
 using std::cerr;
+using std::condition_variable;
 using std::cout;
 using std::endl;
 using std::ifstream;
+using std::lock_guard;
+using std::mutex;
 using std::ostream;
 using std::string;
 using std::stringstream;
+using std::thread;
+using std::unique_lock;
+using std::vector;
+
+#define RESULT_ABORTED (-2)
+
+static mutex cout_mutex;
 
 // number of internal ranks (i.e. those on which pawns can be
 // without the game being over)
@@ -77,7 +101,7 @@ const char *player_name(int player) {
     else if (player == -1)
 	return "Black";
     else
-	assert(0);
+	abort();
 }
 
 static void assert_valid_sq(int x, int y) {
@@ -628,10 +652,6 @@ void Pos::check_sanity() {
     assert(turn == -1 || turn == 1);
     assert(num_white >= 0 && num_black >= 0);
 
-    int wc = num_white, bc = num_black;
-    assert(wc == num_white);
-    assert(bc == num_black);
-
     int s = 0;
     for (int i=0; i<NUM_ISQ; i++) {
 	if (sq[i] == 1)
@@ -840,27 +860,195 @@ struct DepthInfo {
     int num_moves;
 };
 
-static array<DepthInfo, VERBOSE_DEPTH> depth_info;
+typedef array<DepthInfo, VERBOSE_DEPTH> DepthInfoArray;
 
-static uint64_t node_count = 0;
+static atomic<uint64_t> node_count{0};
 
-static int minimax(Pos *p, int depth) {
-    node_count++;
+static int minimax(Pos &p, int depth, DepthInfoArray &depth_info);
+
+static int try_move(Pos &p, const Pos::Move &move, int depth, DepthInfoArray &depth_info) {
+    int turn = p.get_turn();
+
+    //cout << "Taking move " << moves[i] << endl;
+    //p->check_sanity();
+    p.do_move(move);
+
+    Pos canonized(p);
+    // cerr << "Before canonize:" << endl;
+    // canonized.print(cerr);
+    canonized.canonize();
+    assert(canonized.get_turn() == -turn);
+    // cerr << "After canonize:" << endl;
+    // canonized.print(cerr);
+    // cerr << "------------------------------------------------------------" << endl;
+    assert(p.sequential() == canonized.sequential());
+
+    pos_t packed = 0;
+    bool got_result = false;
+    //bool tp_eligible = canonized.sequential() % SAVE_LEVELS == 0;
+    int result = 0;
+
+    packed = canonized.pack();
+    //assert(packed%2 == 0);
+    //packed /= 2;
+    if (tp_table.probe(packed, &result)) {
+	result *= canonized.get_canonize_flip();
+	got_result = true;
+    }
+
+    //p->check_sanity();
+
+    if (!got_result) {
+	//uint64_t saved_node_count = node_count;
+	result = minimax(canonized, depth+1, depth_info);
+	if (result != RESULT_ABORTED) {
+	    //assert(saved_node_count <= node_count);
+	    //saved_node_count = node_count - saved_node_count;
+	    tp_table.add(packed, result*canonized.get_canonize_flip());
+	    //assert(node_count >= saved_node_count);
+	    //node_count -= saved_node_count;
+	}
+    }
+
+    //cout << "Undoing move " << move << endl;
+    p.undo_move(move);
+    //p.check_sanity();
+    return result;
+}
+
+static int try_move_copy(Pos p, Pos::Move move, int depth, DepthInfoArray depth_info) {
+    return try_move(p, move, depth, depth_info);
+}
+
+static void report_depthinfo(int depth, const DepthInfoArray &depth_info) {
+    double size = tp_table.size()/double(TP_TABLE_SIZE)*100.0;
+
+    {
+	lock_guard<mutex> guard(cout_mutex);
+	cout << timer << "\t";
+	for (int j=0; j<depth; j++) {
+	    cout << depth_info[j].curr_move << "/"
+		 << depth_info[j].num_moves << "\t";
+	}
+	for (int j=depth; j<VERBOSE_DEPTH; j++)
+	    cout << "\t";
+
+	cout << size << "%" << endl;
+	// cout << "Depth " << depth << ": move "
+	// 	<< i+1 << "/" << num_moves << "... " << endl;
+    }
+}
+
+static atomic<bool> abortRequested{false};
+
+// Note: if one of the returned results is a win, the draws cannot be relied upon
+// (because they may have been aborted)
+static void moves_loop_parallel(Pos &p, const Pos::Move *moves, int num_moves,
+			      int *results, int depth, DepthInfoArray depth_info) {
+    for (int i=0; i<num_moves; i++)
+	results[i] = RESULT_ABORTED;
+
+    int turn = p.get_turn();
+
+    vector<thread> threads;
+    mutex threads_free_mutex;
+    condition_variable threads_free_cond;
+    int threads_free_count = NUM_THREADS;
+    for (int i=0; i<num_moves; i++) {
+	auto work = [&p, &moves, i, results, depth, depth_info, &turn,
+		     &threads_free_mutex, &threads_free_cond, &threads_free_count]() {
+	    DepthInfoArray dinfo = depth_info;
+	    if (depth <= VERBOSE_DEPTH) {
+		dinfo[depth-1].curr_move = i+1;
+		report_depthinfo(depth, dinfo);
+	    }
+
+	    int result = try_move_copy(p, moves[i], depth, dinfo);
+	    results[i] = result;
+	    if (result == turn)
+		abortRequested.store(true, std::memory_order_relaxed);
+	    {
+		unique_lock<mutex> guard(threads_free_mutex);
+		++threads_free_count;
+	    }
+	    threads_free_cond.notify_one();
+	};
+
+	{
+	    unique_lock<mutex> guard(threads_free_mutex);
+	    while (threads_free_count == 0)
+		threads_free_cond.wait(guard);
+
+	    threads.emplace_back(work);
+	    --threads_free_count;
+	}
+	// FIXME depth 1 reporting
+    }
+
+    for (auto &t : threads)
+	t.join();
+
+    abortRequested.store(false, std::memory_order_relaxed);
+
+    bool have_aborted = false, have_win = false;
+    for (int i=0; i<num_moves; i++) {
+	if (results[i] == RESULT_ABORTED) {
+	    have_aborted = true;
+	    results[i] = 0; // not actually valid, see comment above this function
+	}
+	else if (results[i] == turn)
+	    have_win = true;
+    }
+
+    assert(have_win || !have_aborted);
+}
+
+static void moves_loop_serial(Pos &p, const Pos::Move *moves, int num_moves,
+			      int *results, int depth, DepthInfoArray &depth_info) {
+    int turn = p.get_turn();
+    for (int i=0; i<num_moves; i++) {
+	if (depth <= VERBOSE_DEPTH) {
+	    depth_info[depth-1].curr_move = i+1;
+	    report_depthinfo(depth, depth_info);
+	}
+
+	int result = try_move(p, moves[i], depth, depth_info);
+
+	if (depth == 1) {
+	    cout << timer << "\tDepth " << depth << ": move "
+		 << i+1 << "/" << num_moves << " RESULT=" << result << endl;
+	    //canonized.print(cout);
+	    size_t a = tp_table.size();
+	    cout << timer << "\tTransposition table size = " << a << " ("
+		 << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
+	}
+
+	results[i] = result;
+	if (result == turn)
+	    return; // we can force win
+    }
+}
+
+
+static int minimax(Pos &p, int depth, DepthInfoArray &depth_info) {
+    if (abortRequested.load(std::memory_order_relaxed))
+	return RESULT_ABORTED;
+    node_count.fetch_add(1, std::memory_order_relaxed);
 
     array<Pos::Move, MAX_LEGAL_MOVES> moves;
     array<int, MAX_LEGAL_MOVES> results;
 
-    int turn = p->get_turn();
-    int num_legal_moves = p->get_legal_moves(moves);
+    int turn = p.get_turn();
+    int num_legal_moves = p.get_legal_moves(moves);
 
     //p->print(cout);
 
     if (num_legal_moves == 0) {
 	//cout << "Game over." << endl;
-	return p->winner();
+	return p.winner();
     }
 
-    bool is_horiz_symm = p->is_horiz_symmetric();
+    bool is_horiz_symm = p.is_horiz_symmetric();
     if (is_horiz_symm) {
 	int p = 0;
 	for (int i=0; i<num_legal_moves; i++)
@@ -872,79 +1060,14 @@ static int minimax(Pos *p, int depth) {
     if (depth <= VERBOSE_DEPTH)
 	depth_info[depth-1].num_moves = num_legal_moves;
 
-    for (int i=0; i<num_legal_moves; i++) {
-	//cout << "Taking move " << moves[i] << endl;
-	//p->check_sanity();
-	if (depth <= VERBOSE_DEPTH) {
-	    depth_info[depth-1].curr_move = i+1;
-	    cout << timer << "\t";
-	    for (int j=0; j<depth; j++) {
-		cout << depth_info[j].curr_move << "/"
-		     << depth_info[j].num_moves << "\t";
-	    }
-	    for (int j=depth; j<VERBOSE_DEPTH; j++)
-		cout << "\t";
-	    cout << tp_table.size()/double(TP_TABLE_SIZE)*100.0 << "%" << endl;
-	    // cout << "Depth " << depth << ": move "
-	    // 	 << i+1 << "/" << num_legal_moves << "... " << endl;
-	}
-	p->do_move(moves[i]);
+    if (depth != PARALLEL_DEPTH)
+	moves_loop_serial(p, moves.data(), num_legal_moves, results.data(), depth, depth_info);
+    else
+	moves_loop_parallel(p, moves.data(), num_legal_moves, results.data(), depth, depth_info);
 
-	Pos canonized(*p);
-	// cerr << "Before canonize:" << endl;
-	// canonized.print(cerr);
-	canonized.canonize();
-	assert(canonized.get_turn() == -turn);
-	// cerr << "After canonize:" << endl;
-	// canonized.print(cerr);
-	// cerr << "------------------------------------------------------------" << endl;
-	assert(p->sequential() == canonized.sequential());
-
-	pos_t packed = 0;
-	bool got_result = false;
-	bool tp_eligible = canonized.sequential() % SAVE_LEVELS == 0;
-
-	if (tp_eligible) {
-	    packed = canonized.pack();
-	    //assert(packed%2 == 0);
-	    //packed /= 2;
-	    if (tp_table.probe(packed, &results[i])) {
-		results[i] *= canonized.get_canonize_flip();
-		got_result = true;
-	    }
-	}
-
-	//p->check_sanity();
-
-	if (!got_result) {
-	    uint64_t saved_node_count = node_count;
-	    results[i] = minimax(&canonized, depth+1);
-	    if (tp_eligible) {
-		assert(saved_node_count <= node_count);
-		saved_node_count = node_count - saved_node_count;
-		tp_table.add(packed, results[i]*canonized.get_canonize_flip());
-		assert(node_count >= saved_node_count);
-		node_count -= saved_node_count;
-	    }
-	}
-
-	if (depth == 1) {
-	    cout << timer << "\tDepth " << depth << ": move "
-		 << i+1 << "/" << num_legal_moves << " RESULT=" << results[i]
-		 << "  CANON=" << canonized.pack() << endl;
-	    //canonized.print(cout);
-	    size_t a = tp_table.size();
-	    cout << timer << "\tTransposition table size = " << a << " ("
-		 << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
-	}
-
-	//cout << "Undoing move " << moves[i] << endl;
-	p->undo_move(moves[i]);
-	//p->check_sanity();
-	if (results[i] == turn) {
+    for (int i=0; i<num_legal_moves; i++)
+	if (results[i] == turn)
 	    return turn; // we can force win
-	}
-    }
 
     for (int i=0; i<num_legal_moves; i++)
 	if (results[i] == 0)
@@ -973,7 +1096,10 @@ int main() {
     // p.get_legal_moves(m);
     // p.do_move(m[6]);
     // p.canonize();
-    int result = minimax(&p, 1);
+
+    DepthInfoArray depth_info;
+
+    int result = minimax(p, 1, depth_info);
 
     cout << timer << "\tresult=" << result << endl;
 }

@@ -6,7 +6,7 @@
 
 class FileBackedTranspositionTable : public TranspositionTableBase {
 private:
-    size_t capacity_, used;
+    size_t capacity_;
     FILE *fp;
     TranspositionTableBase::Entry *tab; // mmap()ed
 public:
@@ -14,8 +14,8 @@ public:
     bool add_with_spill(uint64_t pos, int result, Entry *spilled) override;
     bool probe(uint64_t pos, int *result) override;
     void add(uint64_t pos, int result) override;
-    size_t size() const { return 0; /* FIXME */ }
-    size_t get_capacity() const { return capacity_; }
+    size_t size() const override { return 0; /* FIXME */ }
+    size_t get_capacity() const override { return capacity_; }
 };
 
 #endif
