@@ -1,9 +1,10 @@
 #ifndef TranspositionTable_hpp
 #define TranspositionTable_hpp
 
-#include <cstdlib>
-#include <cstdint>
 #include <cassert>
+#include <cstdio>
+#include <cstdint>
+#include <cstdlib>
 
 // Contains everything that does not depend on capacity
 class TranspositionTableBase {
@@ -25,6 +26,8 @@ public:
     virtual size_t size() const = 0; // estimate
     virtual size_t get_capacity() const = 0;
     virtual bool is_empty_slot(uint64_t pos) const = 0;
+    virtual void save(const char *fname) const = 0;
+    virtual void load(const char *fname) = 0;
 };
 
 template<size_t CAPACITY>
@@ -44,6 +47,8 @@ public:
     bool probe(uint64_t pos, int *result) override; // assigns -1, 0, 1
     void add(uint64_t pos, int result) override;
     bool add_with_spill(uint64_t pos, int result, TranspositionTableBase::Entry *spilled) override;
+    void save(const char *fname) const override;
+    void load(const char *fname) override;
 };
 
 template<size_t CAPACITY>
@@ -110,6 +115,55 @@ bool TranspositionTable<CAPACITY>::add_with_spill(uint64_t pos, int result,
     e.result = result+1;
     write_entry(h, e);
     return retval;
+}
+
+template<size_t CAPACITY>
+void TranspositionTable<CAPACITY>::save(const char *fname) const {
+    FILE *fp = fopen(fname, "wb");
+    assert(fp && "Could not open save file for write");
+
+    // write capacity
+    {
+	const size_t cap = CAPACITY;
+	size_t res = fwrite(&cap, sizeof(cap), 1, fp);
+	assert(res == 1);
+    }
+
+    // FIXME slow
+    for (size_t i = 0; i < CAPACITY; i++) {
+	Entry e;
+	read_entry(i, &e);
+	size_t res = fwrite(&e, sizeof(e), 1, fp);
+	assert(res == 1 && "Short write");
+    }
+
+    size_t res = fclose(fp);
+    assert(res == 0 && "Failed to close save file");
+}
+
+template<size_t CAPACITY>
+void TranspositionTable<CAPACITY>::load(const char *fname) {
+    FILE *fp = fopen(fname, "rb");
+    assert(fp && "Could not open save file for read.");
+
+    // read capacity
+    {
+	size_t cap;
+	size_t res = fread(&cap, sizeof(cap), 1, fp);
+	assert(res == 1);
+	assert(cap == CAPACITY && "Wrong capacity in save file.");
+    }
+
+    // FIXME slow
+    for (size_t i = 0; i < CAPACITY; i++) {
+	Entry e;
+	size_t res = fread(&e, sizeof(e), 1, fp);
+	assert(res == 1 && "Short read");
+	write_entry(i, e);
+    }
+
+    size_t res = fclose(fp);
+    assert(res == 0 && "Failed to close save file");
 }
 
 #endif

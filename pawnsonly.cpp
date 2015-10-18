@@ -10,31 +10,35 @@
 #include <cstring>
 #include <ctime>
 #include <iostream>
+#include <fstream>
+#include <signal.h>
 #include <sstream>
 #include <vector>
 
 #define DEBUG 1
-#define VERBOSE_DEPTH 5
+#define VERBOSE_DEPTH 9
 // board size (number of pawns per side). Must be >= 4.
-static const int N = 7;
+static const int N = 8;
 
 //#define SAVE_NODES_LIMIT 50
 #define SAVE_LEVELS 1
 
 // # of 8-byte elements; try to choose a prime
-//static const size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
-static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
-//static const size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
-//static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
+//static const size_t TP_TABLE_SIZE = 30146531; // 115 megabytes
 //static const size_t TP_TABLE_SIZE = 134217689; // .5 gigabytes
 //static const size_t TP_TABLE_SIZE = 268435399; // 1 gigabyte
-//static const size_t TP_TABLE_SIZE = 9614669;
-//static const size_t TP_TABLE_SIZE = 30146531; // 115 megabytes
+//static const size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
+//static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
+//static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
+//static const size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
+//static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
+static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
 
 using std::array;
 using std::cerr;
 using std::cout;
 using std::endl;
+using std::ifstream;
 using std::ostream;
 using std::string;
 using std::stringstream;
@@ -43,7 +47,7 @@ using std::stringstream;
 // without the game being over)
 static const int NUM_RANKS = N-2;
 
-// number of internal squares 
+// number of internal squares
 static const int NUM_ISQ = N*NUM_RANKS;
 
 // starting ranks
@@ -363,7 +367,7 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 	    if (sq[i] == turn)
 		positions[num_pawns++] = i;
     }
-		
+
     assert(num_pawns <= N);
 
     // evaluation function: sum of ranks of pawns squared +
@@ -442,8 +446,8 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 
     for (int i=0; i<num_moves-1; i++)
     	for (int j=i+1; j<num_moves; j++) {
-	    assert(moves[i].value != 999);
-	    assert(moves[j].value != 999);
+	    //assert(moves[i].value != 999);
+	    //assert(moves[j].value != 999);
     	    if (moves[j].value > moves[i].value) {
     		Move tmp = moves[i];
     		moves[i] = moves[j];
@@ -531,7 +535,7 @@ pos_t Pos::pack() const {
     count_pieces();
     uint64_t base = ranks_tab.base(num_white, num_black);
     array<int, N> squares;
-    
+
     for (int i=0, p=0; p<num_white; i++)
 	if (sq[i] == 1)
 	    squares[p++] = i;
@@ -615,7 +619,7 @@ Pos::Pos(pos_t compact) {
 	assert(squares[i] < NUM_ISQ);
 	sq[squares[i]] = -1;
     }
-    
+
 }
 
 
@@ -799,6 +803,38 @@ void test_do_undo_move() {
 MemTranspositionTable<TP_TABLE_SIZE> tp_table;
 //CachedTranspositionTable<MemTranspositionTable<30146531>, MemTranspositionTable<TP_TABLE_SIZE> > tp_table;
 
+static void save_table() {
+    stringstream fname;
+    fname << "tp_" << N << "_" << TP_TABLE_SIZE << ".data";
+    tp_table.save(fname.str().c_str());
+}
+
+static void load_table() {
+    stringstream fname;
+    fname << "tp_" << N << "_" << TP_TABLE_SIZE << ".data";
+    {
+	ifstream f(fname.str());
+	if (!f) {
+	    cout << "No transposition table to load." << endl;
+	    return;
+	}
+    }
+    cout << "Loading transposition table from " << fname.str() << "..." << endl;
+    tp_table.load(fname.str().c_str());
+    cout << "Done." << endl;
+}
+
+static void handle_signal(int signal) {
+    assert(signal == SIGHUP || signal == SIGINT);
+
+    cout << "Signal received, saving transposition table..." << endl;
+    save_table();
+    cout << "Done." << endl;
+
+    if (signal == SIGINT)
+	exit(0);
+}
+
 struct DepthInfo {
     int curr_move;
     int num_moves;
@@ -905,8 +941,9 @@ static int minimax(Pos *p, int depth) {
 	//cout << "Undoing move " << moves[i] << endl;
 	p->undo_move(moves[i]);
 	//p->check_sanity();
-	if (results[i] == turn)
+	if (results[i] == turn) {
 	    return turn; // we can force win
+	}
     }
 
     for (int i=0; i<num_legal_moves; i++)
@@ -917,6 +954,15 @@ static int minimax(Pos *p, int depth) {
 }
 
 int main() {
+    load_table();
+
+    struct sigaction sa;
+
+    sa.sa_handler = handle_signal;
+    sa.sa_flags = SA_RESTART;
+
+    sigaction(SIGHUP, &sa, nullptr);
+    sigaction(SIGINT, &sa, nullptr);
     //count_boards();
     //test_pack_unpack();
     //test_do_undo_move();
@@ -928,6 +974,6 @@ int main() {
     // p.do_move(m[6]);
     // p.canonize();
     int result = minimax(&p, 1);
-    
+
     cout << timer << "\tresult=" << result << endl;
 }

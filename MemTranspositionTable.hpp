@@ -10,8 +10,12 @@ class MemTranspositionTable : public TranspositionTable<CAPACITY> {
     std::vector<typename TranspositionTable<CAPACITY>::Entry> tab;
     MemTranspositionTable(const MemTranspositionTable &);
 protected:
-    void write_entry(size_t n, const TranspositionTableBase::Entry &entry) override { tab[n] = entry; }
-    void read_entry(size_t n, TranspositionTableBase::Entry *entry) const override { *entry = tab[n]; }
+    void write_entry(size_t n, const TranspositionTableBase::Entry &entry) override {
+	tab[n] = entry;
+    }
+    void read_entry(size_t n, TranspositionTableBase::Entry *entry) const override {
+	*entry = tab[n];
+    }
 public:
     MemTranspositionTable();
 
@@ -30,10 +34,10 @@ MemTranspositionTable<CAPACITY>::MemTranspositionTable() {
 template<size_t CAPACITY>
 size_t MemTranspositionTable<CAPACITY>::size() const {
     size_t count = 0;
-    for (size_t i=0; i<CAPACITY/10240; i++)
+    for (size_t i=0; i<CAPACITY/1024; i++)
 	if (tab[i].result != 3)
 	    count++;
-    return count*10240;
+    return count*1024;
 }
 
 #endif
