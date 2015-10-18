@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 
 // Contains everything that does not depend on capacity
 class TranspositionTableBase {
@@ -125,18 +126,27 @@ void TranspositionTable<CAPACITY>::save(const char *fname) const {
     {
 	const size_t cap = CAPACITY;
 	size_t res = fwrite(&cap, sizeof(cap), 1, fp);
-	assert(res == 1);
+	if (res != 1) {
+	    std::cerr << "Short write" << std::endl;
+	    abort();
+	}
     }
 
     // FIXME slow
     for (size_t i = 0; i < CAPACITY; i++) {
 	Entry e = read_entry(i);
 	size_t res = fwrite(&e, sizeof(e), 1, fp);
-	assert(res == 1 && "Short write");
+	if (res != 1) {
+	    std::cerr << "Short write" << std::endl;
+	    abort();
+	}
     }
 
     size_t res = fclose(fp);
-    assert(res == 0 && "Failed to close save file");
+    if (res != 0) {
+	std::cerr << "Failed to close save file" << std::endl;
+	abort();
+    }
 }
 
 template<size_t CAPACITY>
@@ -148,20 +158,32 @@ void TranspositionTable<CAPACITY>::load(const char *fname) {
     {
 	size_t cap;
 	size_t res = fread(&cap, sizeof(cap), 1, fp);
-	assert(res == 1);
-	assert(cap == CAPACITY && "Wrong capacity in save file.");
+	if (res != 1) {
+	    std::cerr << "Short read" << std::endl;
+	    abort();
+	}
+	if (cap != CAPACITY) {
+	    std::cerr << "Wrong capacity in save file" << std::endl;
+	    abort();
+	}
     }
 
     // FIXME slow
     for (size_t i = 0; i < CAPACITY; i++) {
 	Entry e;
 	size_t res = fread(&e, sizeof(e), 1, fp);
-	assert(res == 1 && "Short read");
+	if (res != 1) {
+	    std::cerr << "Short read" << std::endl;
+	    abort();
+	}
 	write_entry(i, e);
     }
 
     size_t res = fclose(fp);
-    assert(res == 0 && "Failed to close save file");
+    if (res != 0) {
+	std::cerr << "Failed to close save file" << std::endl;
+	abort();
+    }
 }
 
 #endif
