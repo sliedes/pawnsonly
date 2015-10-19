@@ -21,13 +21,13 @@
 
 static constexpr bool DEBUG = true;
 
-//static constexpr int N = 7;
-//static constexpr int VERBOSE_DEPTH = 3;
-//static constexpr int PARALLEL_DEPTH = 3;
+static constexpr int N = 7;
+static constexpr int VERBOSE_DEPTH = 3;
+static constexpr int PARALLEL_DEPTH = 3;
 
-static constexpr int N = 8;
-static constexpr int VERBOSE_DEPTH = 7;
-static constexpr int PARALLEL_DEPTH = 4;
+//static constexpr int N = 8;
+//static constexpr int VERBOSE_DEPTH = 7;
+//static constexpr int PARALLEL_DEPTH = 4;
 
 // board size (number of pawns per side). Must be >= 4.
 
@@ -44,8 +44,8 @@ static constexpr int NUM_THREADS = 8;
 //static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
 //static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
 //static constexpr size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
-//static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
-static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
+static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
+//static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
 
 using std::array;
 using std::atomic;
@@ -558,17 +558,17 @@ Pos::Pos() {
 pos_t Pos::pack() const {
     count_pieces();
     uint64_t base = ranks_tab.base(num_white, num_black);
-    array<int, N> squares;
+    array<array<int, NUM_ISQ>, 3> squares; // black, empty, white
+    array<int, 3> num_squares{0};
 
-    for (int i=0, p=0; p<num_white; i++)
-	if (sq[i] == 1)
-	    squares[p++] = i;
-    uint64_t whites_rank = rank_combination(squares.data(), num_white);
+    for (int i=0; i<NUM_ISQ; i++) {
+	//assert(sq[i] >= -1 && sq[i] <= 1);
+	squares[sq[i]+1][num_squares[sq[i]+1]++] = i;
+    }
+    int num_white = num_squares[2], num_black = num_squares[0];
 
-    for (int i=0, p=0; p<num_black; i++)
-	if (sq[i] == -1)
-	    squares[p++] = i;
-    uint64_t blacks_rank = rank_combination(squares.data(), num_black);
+    uint64_t whites_rank = rank_combination(squares[2].data(), num_white);
+    uint64_t blacks_rank = rank_combination(squares[0].data(), num_black);
 
     uint64_t offset = whites_rank;
     offset = offset * binom(NUM_ISQ, num_black) + blacks_rank;
@@ -1077,8 +1077,6 @@ static int minimax(Pos &p, int depth, DepthInfoArray &depth_info) {
 }
 
 int main() {
-    load_table();
-
     struct sigaction sa;
 
     sa.sa_handler = handle_signal;
@@ -1089,6 +1087,9 @@ int main() {
     //count_boards();
     //test_pack_unpack();
     //test_do_undo_move();
+    //exit(0);
+
+    load_table();
 
     //map<pos_t, int> tp_table;
     Pos p;
