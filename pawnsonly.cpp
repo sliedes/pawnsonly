@@ -1,5 +1,4 @@
 #include "MemTranspositionTable.hpp"
-#include "CachedTranspositionTable.hpp"
 #include "binom.hpp"
 #include <algorithm>
 #include <array>
@@ -12,6 +11,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <signal.h>
@@ -21,13 +21,13 @@
 
 static constexpr bool DEBUG = true;
 
-static constexpr int N = 7;
-static constexpr int VERBOSE_DEPTH = 3;
-static constexpr int PARALLEL_DEPTH = 3;
-
 //static constexpr int N = 8;
-//static constexpr int VERBOSE_DEPTH = 7;
-//static constexpr int PARALLEL_DEPTH = 4;
+//static constexpr int VERBOSE_DEPTH = 12;
+//static constexpr int PARALLEL_DEPTH = 3;
+
+static constexpr int N = 8;
+static constexpr int VERBOSE_DEPTH = 11;
+static constexpr int PARALLEL_DEPTH = 18;
 
 // board size (number of pawns per side). Must be >= 4.
 
@@ -44,8 +44,8 @@ static constexpr int NUM_THREADS = 8;
 //static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
 //static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
 //static constexpr size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
-static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
-//static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
+//static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
+static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
 
 using std::array;
 using std::atomic;
@@ -63,7 +63,7 @@ using std::thread;
 using std::unique_lock;
 using std::vector;
 
-#define RESULT_ABORTED (-2)
+#define RESULT_ABORTED (-100)
 
 static mutex cout_mutex;
 
@@ -401,6 +401,7 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 
     for (int i=0; i<num_pawns; i++) {
 	int s = positions[i], file = s%N;
+	int file_centrality = std::min(file, N-1-file);
 	int front = s + turn*N; // sq in front of current
 	int rank = s/N;
 	if (turn == -1)
@@ -409,7 +410,7 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 	    // front square empty, add it
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front;
-	    moves[num_moves].value = 2*rank+1;
+	    moves[num_moves].value = rank+file_centrality;
 	    if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
 		best_unstoppable = num_moves;
 		best_unstoppable_rank = rank+1;
@@ -424,7 +425,7 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 		if (sq[front2] == 0) {
 		    moves[num_moves].from = s;
 		    moves[num_moves].to = front2;
-		    moves[num_moves].value = 4*rank+4;
+		    moves[num_moves].value = rank+2+file_centrality;
 		    if (rank+2 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
 			best_unstoppable = num_moves;
 			best_unstoppable_rank = rank+2;
@@ -439,7 +440,7 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 	    // may capture to left
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front-1;
-	    moves[num_moves].value = 2*rank+1;
+	    moves[num_moves].value = rank+file_centrality;
 	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
 	    if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
 		best_unstoppable = num_moves;
@@ -452,7 +453,7 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 	    // may capture to right
 	    moves[num_moves].from = s;
 	    moves[num_moves].to = front+1;
-	    moves[num_moves].value = 2*rank+1;
+	    moves[num_moves].value = rank+file_centrality;
 	    moves[num_moves].value += (NUM_RANKS-rank)*(NUM_RANKS-rank) + 1;
 	    if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
 		best_unstoppable = num_moves;
@@ -489,9 +490,9 @@ int Pos::winner() const {
 
     if (num_white == 0) {
 	assert(num_black > 0);
-	return -1*canonized_player_flip;
+	return -1; /* *canonized_player_flip;*/
     } else if (num_black == 0)
-	return canonized_player_flip;
+	return 1; /* canonized_player_flip; */
 
     if (turn == 1)
 	base = SQ(0, NUM_RANKS-1);
@@ -501,7 +502,7 @@ int Pos::winner() const {
     }
     for (int i=0; i<N; i++)
 	if (sq[base+i] == turn)
-	    return turn*canonized_player_flip;
+	    return turn; /**canonized_player_flip;*/
     return 0;
 }
 
@@ -559,7 +560,7 @@ pos_t Pos::pack() const {
     count_pieces();
     uint64_t base = ranks_tab.base(num_white, num_black);
     array<array<int, NUM_ISQ>, 3> squares; // black, empty, white
-    array<int, 3> num_squares{0};
+    array<int, 3> num_squares{{0}};
 
     for (int i=0; i<NUM_ISQ; i++) {
 	//assert(sq[i] >= -1 && sq[i] <= 1);
@@ -858,16 +859,22 @@ static void handle_signal(int signal) {
 struct DepthInfo {
     int curr_move;
     int num_moves;
+    int alpha, beta;
 };
 
 typedef array<DepthInfo, VERBOSE_DEPTH> DepthInfoArray;
 
 static atomic<uint64_t> node_count{0};
+//static uint64_t node_count{0};
 
-static int minimax(Pos &p, int depth, DepthInfoArray &depth_info);
+static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
+		   DepthInfoArray &depth_info);
 
-static int try_move(Pos &p, const Pos::Move &move, int depth, DepthInfoArray &depth_info) {
-    int turn = p.get_turn();
+static int try_move(Pos &p, const Pos::Move &move, int depth, int alpha, int beta,
+		    DepthInfoArray &depth_info) {
+    assert(alpha < beta);
+
+    const int turn = p.get_turn();
 
     //cout << "Taking move " << moves[i] << endl;
     //p->check_sanity();
@@ -891,47 +898,94 @@ static int try_move(Pos &p, const Pos::Move &move, int depth, DepthInfoArray &de
     packed = canonized.pack();
     //assert(packed%2 == 0);
     //packed /= 2;
-    if (tp_table.probe(packed, &result)) {
-	result *= canonized.get_canonize_flip();
+    TpResult tpResult = tp_table.probe(packed);
+    // if (turn == -1)
+    //tpResult = flip_result(tpResult);
+
+    switch(tpResult) {
+    case TpResult::NONE:
+	break;
+    case TpResult::CURRENT_LOSS:
+	result = -1;
 	got_result = true;
+	break;
+    case TpResult::DRAW:
+	result = 0;
+	got_result = true;
+	break;
+    case TpResult::CURRENT_WIN:
+	result = 1;
+	got_result = true;
+	break;
+    case TpResult::LOWER_BOUND_0:
+	if (-beta < 0) {
+	    beta = 0;
+	    if (-alpha <= 0) {
+		result = 0;
+		got_result = true;
+	    }
+	}
+	break;
+    case TpResult::UPPER_BOUND_0:
+	if (-alpha > 0) {
+	    alpha = 0;
+	    if (-beta >= 0) {
+		result = 0;
+		got_result = true;
+	    }
+	}
     }
 
     //p->check_sanity();
 
     if (!got_result) {
 	//uint64_t saved_node_count = node_count;
-	result = minimax(canonized, depth+1, depth_info);
-	if (result != RESULT_ABORTED) {
-	    //assert(saved_node_count <= node_count);
-	    //saved_node_count = node_count - saved_node_count;
-	    tp_table.add(packed, result*canonized.get_canonize_flip());
-	    //assert(node_count >= saved_node_count);
-	    //node_count -= saved_node_count;
-	}
+	result = negamax(canonized, depth+1, -beta, -alpha, packed, depth_info);
     }
 
     //cout << "Undoing move " << move << endl;
     p.undo_move(move);
     //p.check_sanity();
-    return result;
+    if (result == RESULT_ABORTED)
+	return RESULT_ABORTED;
+    return -result;
 }
 
-static int try_move_copy(Pos p, Pos::Move move, int depth, DepthInfoArray depth_info) {
-    return try_move(p, move, depth, depth_info);
+static int try_move_copy(Pos p, const Pos::Move &move, int depth, int alpha, int beta,
+			 DepthInfoArray &depth_info) {
+    return try_move(p, move, depth, alpha, beta, depth_info);
 }
 
-static void report_depthinfo(int depth, const DepthInfoArray &depth_info) {
+static void report_depthinfo(int depth, const DepthInfoArray &depth_info, int alpha, int beta) {
     double size = tp_table.size()/double(TP_TABLE_SIZE)*100.0;
 
     {
-	lock_guard<mutex> guard(cout_mutex);
+	//lock_guard<mutex> guard(cout_mutex);
 	cout << timer << "\t";
 	for (int j=0; j<depth; j++) {
 	    cout << depth_info[j].curr_move << "/"
-		 << depth_info[j].num_moves << "\t";
+		 << depth_info[j].num_moves;
+	    int alpha = depth_info[j].alpha, beta = depth_info[j].beta;
+	    assert(alpha >= -1);
+	    assert(alpha <= 1);
+	    assert(beta >= -1);
+	    assert(beta <= 1);
+	    assert(alpha < beta);
+	    if (j%2 == 1) {
+		int old_beta = beta;
+		beta = -alpha;
+		alpha = -old_beta;
+	    }
+	    if (alpha == 0)
+		cout << "+";
+	    else if (beta == 0)
+		cout << "-";
+	    cout << "\t";
 	}
 	for (int j=depth; j<VERBOSE_DEPTH; j++)
 	    cout << "\t";
+
+	//cout << "<" << std::setw(2) << alpha << "," << beta << ">\t";
 
 	cout << size << "%" << endl;
 	// cout << "Depth " << depth << ": move "
@@ -940,105 +994,43 @@ static void report_depthinfo(int depth, const DepthInfoArray &depth_info) {
 }
 
 static atomic<bool> abortRequested{false};
+static bool threads_running = false;
+static mutex threads_free_mutex;
+static condition_variable threads_free_cond;
+static int threads_free_count = NUM_THREADS;
 
-// Note: if one of the returned results is a win, the draws cannot be relied upon
-// (because they may have been aborted)
-static void moves_loop_parallel(Pos &p, const Pos::Move *moves, int num_moves,
-			      int *results, int depth, DepthInfoArray depth_info) {
-    for (int i=0; i<num_moves; i++)
-	results[i] = RESULT_ABORTED;
-
-    int turn = p.get_turn();
-
-    vector<thread> threads;
-    mutex threads_free_mutex;
-    condition_variable threads_free_cond;
-    int threads_free_count = NUM_THREADS;
-    for (int i=0; i<num_moves; i++) {
-	auto work = [&p, &moves, i, results, depth, depth_info, &turn,
-		     &threads_free_mutex, &threads_free_cond, &threads_free_count]() {
-	    DepthInfoArray dinfo = depth_info;
-	    if (depth <= VERBOSE_DEPTH) {
-		dinfo[depth-1].curr_move = i+1;
-		report_depthinfo(depth, dinfo);
-	    }
-
-	    int result = try_move_copy(p, moves[i], depth, dinfo);
-	    results[i] = result;
-	    if (result == turn)
-		abortRequested.store(true, std::memory_order_relaxed);
+class ThreadFreer {
+    bool parallelize;
+public:
+    ThreadFreer(bool parallelize) : parallelize(parallelize) {}
+    ~ThreadFreer() {
+	if (parallelize) {
 	    {
 		unique_lock<mutex> guard(threads_free_mutex);
 		++threads_free_count;
 	    }
 	    threads_free_cond.notify_one();
-	};
-
-	{
-	    unique_lock<mutex> guard(threads_free_mutex);
-	    while (threads_free_count == 0)
-		threads_free_cond.wait(guard);
-
-	    threads.emplace_back(work);
-	    --threads_free_count;
 	}
-	// FIXME depth 1 reporting
+    }
+};
+
+static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
+		   DepthInfoArray &depth_info) {
+    if (DEBUG_POSITION != 0 && packed == DEBUG_POSITION) {
+	cout << "negamax: start " << packed << ", ab=" << alpha << "," << beta << endl;
+	p.print(cout);
     }
 
-    for (auto &t : threads)
-	t.join();
-
-    abortRequested.store(false, std::memory_order_relaxed);
-
-    bool have_aborted = false, have_win = false;
-    for (int i=0; i<num_moves; i++) {
-	if (results[i] == RESULT_ABORTED) {
-	    have_aborted = true;
-	    results[i] = 0; // not actually valid, see comment above this function
-	}
-	else if (results[i] == turn)
-	    have_win = true;
-    }
-
-    assert(have_win || !have_aborted);
-}
-
-static void moves_loop_serial(Pos &p, const Pos::Move *moves, int num_moves,
-			      int *results, int depth, DepthInfoArray &depth_info) {
-    int turn = p.get_turn();
-    for (int i=0; i<num_moves; i++) {
-	if (depth <= VERBOSE_DEPTH) {
-	    depth_info[depth-1].curr_move = i+1;
-	    report_depthinfo(depth, depth_info);
-	}
-
-	int result = try_move(p, moves[i], depth, depth_info);
-
-	if (depth == 1) {
-	    cout << timer << "\tDepth " << depth << ": move "
-		 << i+1 << "/" << num_moves << " RESULT=" << result << endl;
-	    //canonized.print(cout);
-	    size_t a = tp_table.size();
-	    cout << timer << "\tTransposition table size = " << a << " ("
-		 << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
-	}
-
-	results[i] = result;
-	if (result == turn)
-	    return; // we can force win
-    }
-}
-
-
-static int minimax(Pos &p, int depth, DepthInfoArray &depth_info) {
-    if (abortRequested.load(std::memory_order_relaxed))
+    if (abortRequested.load(std::memory_order_relaxed)) {
+	assert(threads_running);
 	return RESULT_ABORTED;
+    }
     node_count.fetch_add(1, std::memory_order_relaxed);
 
     array<Pos::Move, MAX_LEGAL_MOVES> moves;
-    array<int, MAX_LEGAL_MOVES> results;
+    //array<int, MAX_LEGAL_MOVES> results;
 
-    int turn = p.get_turn();
+    const int turn = p.get_turn();
     int num_legal_moves = p.get_legal_moves(moves);
 
     //p->print(cout);
@@ -1048,7 +1040,7 @@ static int minimax(Pos &p, int depth, DepthInfoArray &depth_info) {
 	return p.winner();
     }
 
-    bool is_horiz_symm = p.is_horiz_symmetric();
+    const bool is_horiz_symm = p.is_horiz_symmetric();
     if (is_horiz_symm) {
 	int p = 0;
 	for (int i=0; i<num_legal_moves; i++)
@@ -1060,25 +1052,159 @@ static int minimax(Pos &p, int depth, DepthInfoArray &depth_info) {
     if (depth <= VERBOSE_DEPTH)
 	depth_info[depth-1].num_moves = num_legal_moves;
 
-    if (depth != PARALLEL_DEPTH)
-	moves_loop_serial(p, moves.data(), num_legal_moves, results.data(), depth, depth_info);
-    else
-	moves_loop_parallel(p, moves.data(), num_legal_moves, results.data(), depth, depth_info);
+    const int alpha_orig = alpha;
+    int best_value = -1;
 
-    for (int i=0; i<num_legal_moves; i++)
-	if (results[i] == turn)
-	    return turn; // we can force win
+    bool parallelize_rest = !threads_running && depth <= PARALLEL_DEPTH;
+    bool parallelize = parallelize_rest && alpha+beta != 0;
+    std::array<int, MAX_LEGAL_MOVES> results;
 
-    for (int i=0; i<num_legal_moves; i++)
-	if (results[i] == 0)
-	    return 0; // we can force draw
+    // alpha and beta won't change while this is executing, but they
+    // haven't been set at this point.
+    auto search_move = [&p, depth, &alpha, &beta, &parallelize, &moves, turn, &results,
+			num_legal_moves](int i, DepthInfoArray &depth_info) {
+	ThreadFreer freer(parallelize);
+	int result;
+	if (depth <= VERBOSE_DEPTH) {
+	    depth_info[depth-1].curr_move = i+1;
+	    depth_info[depth-1].alpha = alpha;
+	    depth_info[depth-1].beta = beta;
+	}
 
-    return -turn; // we lose
+	if (parallelize)
+	    result = try_move_copy(p, moves[i], depth, alpha, beta, depth_info);
+	else
+	    result = try_move(p, moves[i], depth, alpha, beta, depth_info);
+	results[i] = result;
+
+	if (result == RESULT_ABORTED) {
+	    assert(threads_running);
+	    return;
+	}
+
+	if (depth <= VERBOSE_DEPTH) {
+	    {
+		lock_guard<mutex> guard(cout_mutex);
+		cout << "depth " << depth << ": result=" << result*turn << endl;
+		report_depthinfo(depth, depth_info, alpha, beta);
+	    }
+
+	    if (depth == 1) {
+		lock_guard<mutex> guard(cout_mutex);
+		cout << timer << "\tDepth " << depth << ": move "
+		     << i+1 << "/" << num_legal_moves << " RESULT=" << result*turn << endl;
+		//canonized.print(cout);
+		size_t a = tp_table.size();
+		cout << timer << "\tTransposition table size = " << a << " ("
+		     << a/double(TP_TABLE_SIZE)*100.0 << "% full)" << endl;
+	    }
+	}
+
+	if (parallelize) {
+	    // See if we can cut off
+	    int new_alpha = std::max(result, alpha);
+	    if (new_alpha >= beta)
+		abortRequested.store(true, std::memory_order_relaxed);
+	}
+    };
+
+    int next_move = 0;
+    if (!parallelize) {
+	for (int i=0; i<num_legal_moves; i++) {
+	    assert(alpha < beta);
+	    search_move(i, depth_info);
+	    if (DEBUG_POSITION != 0 && packed == DEBUG_POSITION) {
+		cout << "Move " << i << ": result=" << results[i] << endl;
+	    }
+	    if (results[i] == RESULT_ABORTED)
+		return RESULT_ABORTED;
+	    best_value = std::max(results[i], best_value);
+	    alpha = std::max(results[i], alpha);
+	    if (alpha >= beta)
+		break; /* alpha cutoff */
+	    if (parallelize_rest && alpha + beta != 0) {
+		next_move = i+1;
+		parallelize = true;
+		break;
+	    }
+
+	}
+    }
+
+    if (parallelize) {
+	assert(alpha < beta);
+	// alpha and beta are guaranteed to not change here.
+	vector<thread> threads;
+	std::array<DepthInfoArray, MAX_LEGAL_MOVES> depth_infos;
+	std::fill(depth_infos.begin(), depth_infos.end(), depth_info);
+
+	threads_running = true;
+	assert(alpha < beta);
+	for (int i=next_move; i<num_legal_moves; i++) {
+	    {
+		results[i] = RESULT_ABORTED;
+		unique_lock<mutex> guard(threads_free_mutex);
+		while (threads_free_count == 0)
+		    threads_free_cond.wait(guard);
+		--threads_free_count;
+	    }
+	    threads.emplace_back(search_move, i, std::ref(depth_infos[i]));
+	}
+
+	for (auto &t : threads)
+	    t.join();
+	threads_running = false;
+
+	abortRequested.store(false, std::memory_order_relaxed);
+
+	for (int i=0; i<num_legal_moves; i++)
+	    if (results[i] != RESULT_ABORTED)
+		best_value = std::max(best_value, results[i]);
+    }
+
+    // if (alpha >= beta)
+    // 	best_value = 0; // cutoff done
+
+    if (depth > 1) { // packed is not valid for depth=1
+	TpResult tp_res;
+	if (best_value == -1) {
+	    if (alpha_orig == 0)
+		tp_res = TpResult::UPPER_BOUND_0;
+	    else {
+		assert(alpha_orig == -1);
+		tp_res = TpResult::CURRENT_LOSS;
+	    }
+	} else if (best_value == 1) {
+	    if (beta == 0)
+		tp_res = TpResult::LOWER_BOUND_0;
+	    else {
+		assert(beta == 1);
+		tp_res = TpResult::CURRENT_WIN;
+	    }
+	} else {
+	    assert(best_value == 0);
+	    if (alpha_orig == 0)
+		tp_res = TpResult::UPPER_BOUND_0;
+	    else if (beta == 0)
+		tp_res = TpResult::LOWER_BOUND_0;
+	    else {
+		assert(alpha_orig == -1 && beta == 1);
+		tp_res = TpResult::DRAW;
+	    }
+	}
+	// if (turn == -1)
+	//     tp_res = flip_result(tp_res);
+	tp_table.add(packed, tp_res);
+    }
+    assert(best_value >= -1);
+    assert(best_value <= 1);
+    return best_value;
 }
 
 int main() {
     struct sigaction sa;
 
+    // FIXME signals and threads don't mix
     sa.sa_handler = handle_signal;
     sa.sa_flags = SA_RESTART;
 
@@ -1100,7 +1226,8 @@ int main() {
 
     DepthInfoArray depth_info;
 
-    int result = minimax(p, 1, depth_info);
+    int result = negamax(p, 1, -1 /* alpha */, 1 /* beta */, 0 /* packed */,
+			 depth_info);
 
     cout << timer << "\tresult=" << result << endl;
 }

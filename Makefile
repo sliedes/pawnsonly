@@ -2,7 +2,7 @@ CXXFLAGS=-std=c++14 -Wall -g -O3
 LDFLAGS=-latomic -lpthread
 CXX=g++
 
-OBJS=pawnsonly.o binom.o FileBackedTranspositionTable.o
+OBJS=pawnsonly.o binom.o
 
 .cpp.o:
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
