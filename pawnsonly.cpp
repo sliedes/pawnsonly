@@ -21,13 +21,15 @@
 
 static constexpr bool DEBUG = true;
 
-//static constexpr int N = 8;
-//static constexpr int VERBOSE_DEPTH = 12;
-//static constexpr int PARALLEL_DEPTH = 3;
+static constexpr int N = 7;
+static constexpr int VERBOSE_DEPTH = 5;
+static constexpr int PARALLEL_DEPTH = 10;
+static constexpr int ALPHABETA_MIN_DEPTH = 4;
 
-static constexpr int N = 8;
-static constexpr int VERBOSE_DEPTH = 11;
-static constexpr int PARALLEL_DEPTH = 18;
+// static constexpr int N = 8;
+// static constexpr int VERBOSE_DEPTH = 9;
+// static constexpr int PARALLEL_DEPTH = 18;
+// static constexpr int ALPHABETA_MIN_DEPTH = 6;
 
 // board size (number of pawns per side). Must be >= 4.
 
@@ -41,11 +43,11 @@ static constexpr int NUM_THREADS = 8;
 //static const size_t TP_TABLE_SIZE = 134217689; // .5 gigabytes
 //static const size_t TP_TABLE_SIZE = 268435399; // 1 gigabyte
 //static const size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
-//static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
+static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
 //static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
 //static constexpr size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
 //static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
-static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
+//static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
 
 using std::array;
 using std::atomic;
@@ -186,6 +188,7 @@ class Pos {
     mutable int num_white = -1, num_black = -1; // calculated if/when needed
     int seq;
     int canonized_player_flip; // -1 changed player in canonize, else 1
+    bool horiz_flipped;
     // FIXME en passant square
     void force_count_pieces() const;
     void count_pieces() const { if (num_white == -1) force_count_pieces(); }
@@ -200,6 +203,44 @@ public:
 
 	// used to remove symmetric moves if Pos::is_horiz_symmetric() returns true
 	bool is_from_right_half() const { return from >= (N+1)/2; }
+
+	Move decanonize(bool black, bool flip_horiz) const {
+	    Move m(*this);
+	    int from = this->from, to = this->to, replacing = this->replacing;
+	    if (black) {
+		from = NUM_ISQ-1-from;
+		to = NUM_ISQ-1-to;
+		replacing = -replacing;
+	    }
+	    if (flip_horiz) {
+		int from_file = from%N, from_rank = from/N,
+		    to_file = to%N, to_rank = to/N;
+		from_file = N-1-from_file;
+		to_file = N-1-to_file;
+		from = from_rank*N + from_file;
+		to = to_rank*N + to_file;
+	    }
+	    m.from = from;
+	    m.to = to;
+	    m.replacing = replacing;
+	    return m;
+	}
+
+	string name() const {
+	    int from_file = from%N, from_rank = from/N,
+		to_file = to%N, to_rank = to/N;
+	    assert(from_file >= 0);
+	    assert(from_file < N);
+	    assert(from_rank >= 0);
+	    assert(from_rank < NUM_RANKS);
+
+	    stringstream ss;
+	    ss << ('a'+from_file) << ('1'+from_rank);
+	    if (replacing)
+		ss << 'x';
+	    ss << ('a'+to_file) << ('1'+to_rank);
+	    return ss.str();
+	}
     };
 
     Pos(); // initial position
@@ -216,6 +257,7 @@ public:
 
     int winner() const; // -1 if won by black, 1 if by white, 0 otherwise
     int get_canonize_flip() const { return canonized_player_flip; }
+    bool get_horiz_flipped() const { return horiz_flipped; }
 
     // a number that proceeds roughly sequentially per move
     // (at least from perspective of small modulos)
@@ -285,6 +327,8 @@ void Pos::horiz_mirror_board() {
 	left++;
 	right--;
     }
+
+    horiz_flipped = !horiz_flipped;
     //check_sanity();
 }
 
@@ -552,6 +596,7 @@ Pos::Pos() {
     seq = 0;
 
     canonized_player_flip = 1;
+    horiz_flipped = false;
 
     count_pieces();
 }
@@ -857,8 +902,9 @@ static void handle_signal(int signal) {
 }
 
 struct DepthInfo {
-    int curr_move;
+    int curr_move_num;
     int num_moves;
+    Pos::Move move;
     int alpha, beta;
 };
 
@@ -956,14 +1002,23 @@ static int try_move_copy(Pos p, const Pos::Move &move, int depth, int alpha, int
     return try_move(p, move, depth, alpha, beta, depth_info);
 }
 
-static void report_depthinfo(int depth, const DepthInfoArray &depth_info, int alpha, int beta) {
-    double size = tp_table.size()/double(TP_TABLE_SIZE)*100.0;
+static void report_depthinfo(int depth, const DepthInfoArray &depth_info, int alpha,
+			     int beta, int result) {
+    const double size = tp_table.size()/double(TP_TABLE_SIZE)*100.0;
+    const bool white_to_move = (depth%2 == 1);
+
+    if (!white_to_move) {
+	int old_beta = beta;
+	beta = -alpha;
+	alpha = -old_beta;
+	result = -result;
+    }
 
     {
 	//lock_guard<mutex> guard(cout_mutex);
 	cout << timer << "\t";
 	for (int j=0; j<depth; j++) {
-	    cout << depth_info[j].curr_move << "/"
+	    cout << depth_info[j].curr_move_num << "/"
 		 << depth_info[j].num_moves;
 	    int alpha = depth_info[j].alpha, beta = depth_info[j].beta;
 	    assert(alpha >= -1);
@@ -977,9 +1032,9 @@ static void report_depthinfo(int depth, const DepthInfoArray &depth_info, int al
 		alpha = -old_beta;
 	    }
 	    if (alpha == 0)
-		cout << "+";
-	    else if (beta == 0)
 		cout << "-";
+	    else if (beta == 0)
+		cout << "+";
 	    cout << "\t";
 	}
 	for (int j=depth; j<VERBOSE_DEPTH; j++)
@@ -987,7 +1042,35 @@ static void report_depthinfo(int depth, const DepthInfoArray &depth_info, int al
 
 	//cout << "<" << std::setw(2) << alpha << "," << beta << ">\t";
 
-	cout << size << "%" << endl;
+	cout.setf(std::ios::fixed, std::ios::floatfield);
+	cout << size << "%" << "\t";
+
+	for (int j=0; j<depth; j++) {
+	    if (j%2 == 0)
+		cout << j/2+1 << ". ";
+	    cout << depth_info[j].move;
+	    cout << " ";
+	}
+
+	switch(result) {
+	case -1:
+	    cout << "0-1";
+	    break;
+	case 0:
+	    cout << "1/2-1/2";
+	    if (alpha == 0)
+		cout << "-";
+	    else if (beta == 0)
+		cout << "+";
+	    break;
+	case 1:
+	    cout << "1-0";
+	    break;
+	default:
+	    assert(false);
+	    abort();
+	}
+	cout << endl;
 	// cout << "Depth " << depth << ": move "
 	// 	<< i+1 << "/" << num_moves << "... " << endl;
     }
@@ -1056,7 +1139,7 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
     int best_value = -1;
 
     bool parallelize_rest = !threads_running && depth <= PARALLEL_DEPTH;
-    bool parallelize = parallelize_rest && alpha+beta != 0;
+    bool parallelize = parallelize_rest && (alpha+beta != 0 || depth < ALPHABETA_MIN_DEPTH);
     std::array<int, MAX_LEGAL_MOVES> results;
 
     // alpha and beta won't change while this is executing, but they
@@ -1066,7 +1149,9 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 	ThreadFreer freer(parallelize);
 	int result;
 	if (depth <= VERBOSE_DEPTH) {
-	    depth_info[depth-1].curr_move = i+1;
+	    depth_info[depth-1].curr_move_num = i+1;
+	    depth_info[depth-1].move = moves[i].decanonize(p.get_turn() == -1,
+							   p.get_horiz_flipped());
 	    depth_info[depth-1].alpha = alpha;
 	    depth_info[depth-1].beta = beta;
 	}
@@ -1085,8 +1170,8 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 	if (depth <= VERBOSE_DEPTH) {
 	    {
 		lock_guard<mutex> guard(cout_mutex);
-		cout << "depth " << depth << ": result=" << result*turn << endl;
-		report_depthinfo(depth, depth_info, alpha, beta);
+		//cout << "depth " << depth << ": result=" << result*turn << endl;
+		report_depthinfo(depth, depth_info, alpha, beta, result);
 	    }
 
 	    if (depth == 1) {
@@ -1100,7 +1185,7 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 	    }
 	}
 
-	if (parallelize) {
+	if (parallelize && depth >= ALPHABETA_MIN_DEPTH) {
 	    // See if we can cut off
 	    int new_alpha = std::max(result, alpha);
 	    if (new_alpha >= beta)
@@ -1119,7 +1204,8 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 	    if (results[i] == RESULT_ABORTED)
 		return RESULT_ABORTED;
 	    best_value = std::max(results[i], best_value);
-	    alpha = std::max(results[i], alpha);
+	    if (depth >= ALPHABETA_MIN_DEPTH)
+		alpha = std::max(results[i], alpha);
 	    if (alpha >= beta)
 		break; /* alpha cutoff */
 	    if (parallelize_rest && alpha + beta != 0) {
