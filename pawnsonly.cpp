@@ -22,14 +22,16 @@
 static constexpr bool DEBUG = true;
 
 static constexpr int N = 7;
-static constexpr int VERBOSE_DEPTH = 5;
+static constexpr int VERBOSE_DEPTH = 3;
 static constexpr int PARALLEL_DEPTH = 10;
 static constexpr int ALPHABETA_MIN_DEPTH = 4;
+static constexpr int PARALLEL_MIN_DEPTH = 3;
 
 // static constexpr int N = 8;
-// static constexpr int VERBOSE_DEPTH = 9;
+// static constexpr int VERBOSE_DEPTH = 8;
 // static constexpr int PARALLEL_DEPTH = 18;
 // static constexpr int ALPHABETA_MIN_DEPTH = 6;
+// static constexpr int PARALLEL_MIN_DEPTH = 3;
 
 // board size (number of pawns per side). Must be >= 4.
 
@@ -1138,7 +1140,8 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
     const int alpha_orig = alpha;
     int best_value = -1;
 
-    bool parallelize_rest = !threads_running && depth <= PARALLEL_DEPTH;
+    bool parallelize_rest = !threads_running && depth <= PARALLEL_DEPTH &&
+	depth >= PARALLEL_MIN_DEPTH;
     bool parallelize = parallelize_rest && (alpha+beta != 0 || depth < ALPHABETA_MIN_DEPTH);
     std::array<int, MAX_LEGAL_MOVES> results;
 
