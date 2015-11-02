@@ -21,19 +21,19 @@
 
 static constexpr bool DEBUG = true;
 
-static constexpr int N = 7;
-static constexpr int VERBOSE_DEPTH = 3;
-static constexpr int PARALLEL_DEPTH = 10;
-static constexpr int ALPHABETA_MIN_DEPTH = 4;
+// static constexpr int N = 7;
+// static constexpr int VERBOSE_DEPTH = 3;
+// static constexpr int PARALLEL_DEPTH = 10;
+// static constexpr int ALPHABETA_MIN_DEPTH = 0;
+// static constexpr int PARALLEL_MIN_DEPTH = 0;
+// static constexpr size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
+
+static constexpr int N = 8;
+static constexpr int VERBOSE_DEPTH = 8;
+static constexpr int PARALLEL_DEPTH = 18;
+static constexpr int CUT_MIN_DEPTH = 4;
 static constexpr int PARALLEL_MIN_DEPTH = 3;
-
-// static constexpr int N = 8;
-// static constexpr int VERBOSE_DEPTH = 8;
-// static constexpr int PARALLEL_DEPTH = 18;
-// static constexpr int ALPHABETA_MIN_DEPTH = 6;
-// static constexpr int PARALLEL_MIN_DEPTH = 3;
-
-// board size (number of pawns per side). Must be >= 4.
+static constexpr size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
 
 static constexpr int NUM_THREADS = 8;
 
@@ -41,15 +41,15 @@ static constexpr int NUM_THREADS = 8;
 //static constexpr int SAVE_LEVELS = 1;
 
 // # of 8-byte elements; try to choose a prime
-//static const size_t TP_TABLE_SIZE = 30146531; // 115 megabytes
-//static const size_t TP_TABLE_SIZE = 134217689; // .5 gigabytes
-//static const size_t TP_TABLE_SIZE = 268435399; // 1 gigabyte
-//static const size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
-static const size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
-//static const size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
+//static constexpr size_t TP_TABLE_SIZE = 30146531; // 115 megabytes
+//static constexpr size_t TP_TABLE_SIZE = 134217689; // .5 gigabytes
+//static constexpr size_t TP_TABLE_SIZE = 268435399; // 1 gigabyte
+//static constexpr size_t TP_TABLE_SIZE = 536870909; // 2 gigabytes
+//static constexpr size_t TP_TABLE_SIZE = 671088637; // 2.5 gigabytes
+//static constexpr size_t TP_TABLE_SIZE = 1073741827; // 4 gigabytes
 //static constexpr size_t TP_TABLE_SIZE = 1342177283; // 5 gigabytes
-//static const size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
-//static const size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
+//static constexpr size_t TP_TABLE_SIZE = 3221225533; // 12 gigabytes
+//static constexpr size_t TP_TABLE_SIZE = 6710886419; // 25 gigabytes
 
 using std::array;
 using std::atomic;
@@ -73,17 +73,21 @@ static mutex cout_mutex;
 
 // number of internal ranks (i.e. those on which pawns can be
 // without the game being over)
-static const int NUM_RANKS = N-2;
+static constexpr int NUM_RANKS = N-2;
 
 // number of internal squares
-static const int NUM_ISQ = N*NUM_RANKS;
+static constexpr int NUM_ISQ = N*NUM_RANKS;
 
 // starting ranks
-static const int RANK_WHITE = 0;
-static const int RANK_BLACK = NUM_RANKS-1;
+static constexpr int RANK_WHITE = 0;
+static constexpr int RANK_BLACK = NUM_RANKS-1;
+
+// a pawn must be in one of these ranks to even be candidate for en passant
+static constexpr int EP_RANK_WHITE = RANK_WHITE+2;
+static constexpr int EP_RANK_BLACK = RANK_BLACK-2;
 
 // tighter limit? N*2 is not enough
-static const int MAX_LEGAL_MOVES = N*3;
+static constexpr int MAX_LEGAL_MOVES = N*3;
 
 // compactly represented position
 typedef uint64_t pos_t;
@@ -99,7 +103,12 @@ static ostream &operator<<(ostream &str, const Timer &t) {
     return str << "[" << t.elapsed() << "]";
 }
 
-const char *player_name(int player) {
+static const int flip_horiz_sq(int sq) {
+    int rank = sq/N, file = sq%N;
+    return rank*N + (N-1-file);
+}
+
+static const char *player_name(int player) {
     if (player == 1)
 	return "White";
     else if (player == -1)
@@ -177,7 +186,7 @@ Compact_tab::Compact_tab() {
 		continue;
 	    // cout << "[" << p-1 << "]: " << white << "+" << black << ": "
 	    // 	 << binom(NUM_ISQ, white) * binom(NUM_ISQ, black) * 2 << endl;
-	    tab[p] = tab[p-1] + binom(NUM_ISQ, white) * binom(NUM_ISQ, black) * 2;
+	    tab[p] = tab[p-1] + binom(NUM_ISQ, white) * binom(NUM_ISQ, black) * 2 * (N+1);
 	    p++;
 	}
     assert(p == SIZE);
@@ -188,20 +197,27 @@ class Pos {
     array<int, NUM_ISQ> sq; // 1 = white, -1 = black, 0 = empty
     int turn; // 1 = white, -1 = black
     mutable int num_white = -1, num_black = -1; // calculated if/when needed
-    int seq;
     int canonized_player_flip; // -1 changed player in canonize, else 1
     bool horiz_flipped;
-    // FIXME en passant square
+    int ep_file; // en passant; -1 = no ep
     void force_count_pieces() const;
     void count_pieces() const { if (num_white == -1) force_count_pieces(); }
     void clear();
     // check if a hypothetical pawn at a square is unstoppable
     bool is_unstoppable(int sq) const;
 public:
-    // 'replacing' = the contents of the square moved to
-    // (so this information is enough to undo the move)
     struct Move {
-	int from, to, replacing, value, seq;
+	// 'replacing' = the contents of the square moved to
+	// (so this information is enough to undo the move).
+	int from, to, replacing, value;
+	int new_ep_file, old_ep_file, ep_square;
+
+	// Move(int from, int to, int replacing, int value, int ep_square=-1)
+	//     : from(from), to(to), replacing(replacing), value(value), ep_square(ep_square)
+	// {}
+
+	Move() : from(-1), to(-1), replacing(-100), value(-9999999), new_ep_file(-1),
+		 old_ep_file(-9999999), ep_square(-1) {}
 
 	// used to remove symmetric moves if Pos::is_horiz_symmetric() returns true
 	bool is_from_right_half() const { return from >= (N+1)/2; }
@@ -209,22 +225,34 @@ public:
 	Move decanonize(bool black, bool flip_horiz) const {
 	    Move m(*this);
 	    int from = this->from, to = this->to, replacing = this->replacing;
+	    int old_ep_f = old_ep_file, new_ep_f = new_ep_file, ep_sq = ep_square;
 	    if (black) {
 		from = NUM_ISQ-1-from;
 		to = NUM_ISQ-1-to;
+		if (old_ep_f != -1)
+		    old_ep_f = N-1-old_ep_f;
+		if (new_ep_f != -1)
+		    new_ep_f = N-1-new_ep_f;
+		if (ep_sq != -1)
+		    ep_sq = NUM_ISQ-1-ep_sq;
 		replacing = -replacing;
 	    }
 	    if (flip_horiz) {
-		int from_file = from%N, from_rank = from/N,
-		    to_file = to%N, to_rank = to/N;
-		from_file = N-1-from_file;
-		to_file = N-1-to_file;
-		from = from_rank*N + from_file;
-		to = to_rank*N + to_file;
+		from = flip_horiz_sq(from);
+		to = flip_horiz_sq(to);
+		if (old_ep_f != -1)
+		    old_ep_f = N-1-old_ep_f;
+		if (new_ep_f != -1)
+		    new_ep_f = N-1-new_ep_f;
+		if (ep_sq != -1)
+		    ep_sq = flip_horiz_sq(ep_sq);
 	    }
 	    m.from = from;
 	    m.to = to;
 	    m.replacing = replacing;
+	    m.old_ep_file = old_ep_f;
+	    m.new_ep_file = new_ep_f;
+	    m.ep_square = ep_sq;
 	    return m;
 	}
 
@@ -240,6 +268,8 @@ public:
 	    ss << ('a'+from_file) << ('1'+from_rank);
 	    if (replacing)
 		ss << 'x';
+	    else if (ep_square != -1)
+		ss << "(ep)";
 	    ss << ('a'+to_file) << ('1'+to_rank);
 	    return ss.str();
 	}
@@ -260,10 +290,6 @@ public:
     int winner() const; // -1 if won by black, 1 if by white, 0 otherwise
     int get_canonize_flip() const { return canonized_player_flip; }
     bool get_horiz_flipped() const { return horiz_flipped; }
-
-    // a number that proceeds roughly sequentially per move
-    // (at least from perspective of small modulos)
-    int sequential() const { return seq; }
 
     // Returns count.
     int get_legal_moves(array<Move, MAX_LEGAL_MOVES> &moves) const;
@@ -330,6 +356,9 @@ void Pos::horiz_mirror_board() {
 	right--;
     }
 
+    if (ep_file != -1)
+	ep_file = N-1-ep_file;
+
     horiz_flipped = !horiz_flipped;
     //check_sanity();
 }
@@ -349,6 +378,8 @@ void Pos::canonize() {
 	int tmp = num_white;
 	num_white = num_black;
 	num_black = tmp;
+	if (ep_file != -1)
+	    ep_file = N-1-ep_file;
 	//check_sanity();
     }
 
@@ -388,14 +419,28 @@ void Pos::do_move(const Move &move) {
     assert(sq[move.to] == move.replacing);
     sq[move.from] = 0;
     sq[move.to] = turn;
-    seq += move.seq;
+
+    bool captured = false;
+
     if (move.replacing) {
 	assert(move.replacing == -turn);
+	captured = true;
+    } else if (move.ep_square != -1) {
+	assert(sq[move.ep_square] == -turn);
+	sq[move.ep_square] = 0;
+	captured = true;
+    }
+
+    if (captured) {
 	if (turn == 1)
 	    num_black--;
 	else
 	    num_white--;
     }
+
+    assert(ep_file == move.old_ep_file);
+    ep_file = move.new_ep_file;
+
     turn = -turn;
 }
 
@@ -405,14 +450,27 @@ void Pos::undo_move(const Move &move) {
     assert(sq[move.from] == 0);
     sq[move.from] = turn;
     sq[move.to] = move.replacing;
-    seq -= move.seq;
+
+    bool captured = false;
+
     if (move.replacing) {
 	assert(move.replacing == -turn);
+	captured = true;
+    } else if (move.ep_square != -1) {
+	assert(sq[move.ep_square] == 0);
+	sq[move.ep_square] = -turn;
+	captured = true;
+    }
+
+    if (captured) {
 	if (turn == 1)
 	    num_black++;
 	else
 	    num_white++;
     }
+
+    assert(ep_file == move.new_ep_file);
+    ep_file = move.old_ep_file;
 }
 
 int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
@@ -461,7 +519,6 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 		best_unstoppable = num_moves;
 		best_unstoppable_rank = rank+1;
 	    }
-	    moves[num_moves].seq = 1;
 	    moves[num_moves++].replacing = 0;
 	    if (N >= 5 && rank == 0) {
 		// move ahead 2 squares?
@@ -476,12 +533,14 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 			best_unstoppable = num_moves;
 			best_unstoppable_rank = rank+2;
 		    }
-		    moves[num_moves].seq = 2;
+		    // if there's something that can capture this, mark file as en passant
+		    if ((file != 0 && sq[front2-1] == -turn) ||
+			(file != N-1 && sq[front2+1] == -turn))
+			moves[num_moves].new_ep_file = file;
 		    moves[num_moves++].replacing = 0;
 		}
 	    }
 	}
-	int captured_pawn_rank = RANK_BLACK-(rank+1);
 	if (file != 0 && sq[front-1] == -turn) {
 	    // may capture to left
 	    moves[num_moves].from = s;
@@ -492,7 +551,6 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 		best_unstoppable = num_moves;
 		best_unstoppable_rank = rank+1;
 	    }
-	    moves[num_moves].seq = 1 - captured_pawn_rank;
 	    moves[num_moves++].replacing = -turn;
 	}
 	if (file != N-1 && sq[front+1] == -turn) {
@@ -505,8 +563,40 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 		best_unstoppable = num_moves;
 		best_unstoppable_rank = rank+1;
 	    }
-	    moves[num_moves].seq = 1 - captured_pawn_rank;
 	    moves[num_moves++].replacing = -turn;
+	}
+	if ((turn == 1 && rank == EP_RANK_BLACK) || (turn == -1 && rank == EP_RANK_WHITE)) {
+	    if (file != 0 && ep_file == file-1) {
+		// may capture en passant to left
+		assert(sq[s-1] == -turn);
+		assert(sq[front-1] == 0);
+		moves[num_moves].from = s;
+		moves[num_moves].to = front-1;
+		moves[num_moves].value = rank+file_centrality;
+		moves[num_moves].value += (NUM_RANKS-rank+1)*(NUM_RANKS-rank+1)+1;
+		if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
+		    best_unstoppable = num_moves;
+		    best_unstoppable_rank = rank+1;
+		}
+		assert(sq[moves[num_moves].to] == 0);
+		moves[num_moves].ep_square = s-1;
+		moves[num_moves++].replacing = 0;
+	    }
+	    if (file != N-1 && ep_file == file+1) {
+		// may capture en passant to right
+		assert(sq[s+1] == -turn);
+		assert(sq[front+1] == 0);
+		moves[num_moves].from = s;
+		moves[num_moves].to = front+1;
+		moves[num_moves].value = rank+file_centrality;
+		moves[num_moves].value += (NUM_RANKS-rank+1)*(NUM_RANKS-rank+1)+1;
+		if (rank+1 > best_unstoppable_rank && is_unstoppable(moves[num_moves].to)) {
+		    best_unstoppable = num_moves;
+		    best_unstoppable_rank = rank+1;
+		}
+		moves[num_moves].ep_square = s+1;
+		moves[num_moves++].replacing = 0;
+	    }
 	}
     }
 
@@ -514,6 +604,9 @@ int Pos::get_legal_moves(array<Pos::Move, MAX_LEGAL_MOVES> &moves) const {
 
     if (best_unstoppable != -1)
 	moves[best_unstoppable].value += 100*(2+best_unstoppable_rank);
+
+    for (Move &m : moves)
+	m.old_ep_file = ep_file;
 
     for (int i=0; i<num_moves-1; i++)
     	for (int j=i+1; j<num_moves; j++) {
@@ -560,6 +653,9 @@ bool Pos::operator==(const Pos &a) const {
 	if (sq[i] != a.sq[i])
 	    return false;
 
+    if (ep_file != a.ep_file)
+	return false;
+
     return true;
 }
 
@@ -585,7 +681,12 @@ void Pos::force_count_pieces() const {
     }
 }
 
-Pos::Pos() {
+Pos::Pos()
+    : turn(1)
+    , canonized_player_flip(1)
+    , horiz_flipped(false)
+    , ep_file(-1)
+{
     for (int i=0; i<NUM_ISQ; i++)
 	sq[i] = 0;
 
@@ -593,12 +694,6 @@ Pos::Pos() {
 	sq[SQ(i, RANK_WHITE)] = 1;
 	sq[SQ(i, RANK_BLACK)] = -1;
     }
-    turn = 1;
-
-    seq = 0;
-
-    canonized_player_flip = 1;
-    horiz_flipped = false;
 
     count_pieces();
 }
@@ -621,6 +716,7 @@ pos_t Pos::pack() const {
     uint64_t offset = whites_rank;
     offset = offset * binom(NUM_ISQ, num_black) + blacks_rank;
     offset = offset * 2 + (turn == -1);
+    offset = offset * (N+1) + ep_file + 1;
 
     bool error = false;
 
@@ -667,6 +763,9 @@ Pos::Pos(pos_t compact) {
     num_black = (idx+1)%(N+1);
     num_white = (idx+1)/(N+1);
 
+    ep_file = (offset % (N+1)) - 1;
+    offset /= N+1;
+
     if (offset % 2)
 	turn = -1;
     else
@@ -706,12 +805,6 @@ void Pos::check_sanity() {
 	    s += i/N;
 	else if (sq[i] == -1)
 	    s += (NUM_RANKS-1-i/N);
-    }
-
-    if (seq != s) {
-	cerr << "seq != s: " << seq << " != " << s << endl;
-	print(cerr);
-	abort();
     }
 }
 
@@ -753,7 +846,7 @@ void Pos::clear() {
 }
 
 void Pos::random_position() {
-    int w = 0,b = 0;
+    int w = 0, b = 0;
     do {
 	int r = rand();
 	w = r % N;
@@ -790,6 +883,36 @@ void Pos::random_position(int nw, int nb) {
 	turn = -1;
     else
 	turn = 1;
+
+    // now check if any of the pawns not in turn could be just moved
+    // two spaces, and possibly mark one of them as en passant
+    const int prev_turn = -turn;
+    const bool prev_was_white = (turn == -1);
+    const int ep_rank = prev_was_white ? EP_RANK_WHITE : EP_RANK_BLACK;
+    const int first_ep_square = SQ(0, ep_rank);
+
+    ep_file = -1;
+
+    int ep_files[N], ep_count=0;
+    int ep_backward = turn*N;
+    for (int i=0; i<N; i++) {
+	if (sq[first_ep_square+i] == prev_turn) {
+	    if (((i != 0 && sq[first_ep_square+i-1] == turn) ||
+		 (i != N-1 && sq[first_ep_square+i+1] == turn)) &&
+		sq[first_ep_square+i+ep_backward] == 0 &&
+		sq[first_ep_square+i+2*ep_backward] == 0)
+		ep_files[ep_count++] = i; // something can take this
+	}
+    }
+
+    if (ep_count == 0)
+	return;
+
+    int ep = rand() % (ep_count + 1);
+    if (ep == ep_count)
+	ep_file = -1; // no en passant this time
+    else
+	ep_file = ep_files[ep];
 }
 
 void count_boards() {
@@ -871,37 +994,37 @@ void test_do_undo_move() {
 MemTranspositionTable<TP_TABLE_SIZE> tp_table;
 //CachedTranspositionTable<MemTranspositionTable<30146531>, MemTranspositionTable<TP_TABLE_SIZE> > tp_table;
 
-static void save_table() {
-    stringstream fname;
-    fname << "tp_" << N << "_" << TP_TABLE_SIZE << ".data";
-    tp_table.save(fname.str().c_str());
-}
+// static void save_table() {
+//     stringstream fname;
+//     fname << "tp_" << N << "_" << TP_TABLE_SIZE << ".data";
+//     tp_table.save(fname.str().c_str());
+// }
 
-static void load_table() {
-    stringstream fname;
-    fname << "tp_" << N << "_" << TP_TABLE_SIZE << ".data";
-    {
-	ifstream f(fname.str());
-	if (!f) {
-	    cout << "No transposition table to load." << endl;
-	    return;
-	}
-    }
-    cout << "Loading transposition table from " << fname.str() << "..." << endl;
-    tp_table.load(fname.str().c_str());
-    cout << "Done." << endl;
-}
+// static void load_table() {
+//     stringstream fname;
+//     fname << "tp_" << N << "_" << TP_TABLE_SIZE << ".data";
+//     {
+// 	ifstream f(fname.str());
+// 	if (!f) {
+// 	    cout << "No transposition table to load." << endl;
+// 	    return;
+// 	}
+//     }
+//     cout << "Loading transposition table from " << fname.str() << "..." << endl;
+//     tp_table.load(fname.str().c_str());
+//     cout << "Done." << endl;
+// }
 
-static void handle_signal(int signal) {
-    assert(signal == SIGHUP || signal == SIGINT);
+// static void handle_signal(int signal) {
+//     assert(signal == SIGHUP || signal == SIGINT);
 
-    cout << "Signal received, saving transposition table..." << endl;
-    save_table();
-    cout << "Done." << endl;
+//     cout << "Signal received, saving transposition table..." << endl;
+//     save_table();
+//     cout << "Done." << endl;
 
-    if (signal == SIGINT)
-	exit(0);
-}
+//     if (signal == SIGINT)
+// 	exit(0);
+// }
 
 struct DepthInfo {
     int curr_move_num;
@@ -936,11 +1059,9 @@ static int try_move(Pos &p, const Pos::Move &move, int depth, int alpha, int bet
     // cerr << "After canonize:" << endl;
     // canonized.print(cerr);
     // cerr << "------------------------------------------------------------" << endl;
-    assert(p.sequential() == canonized.sequential());
 
     pos_t packed = 0;
     bool got_result = false;
-    //bool tp_eligible = canonized.sequential() % SAVE_LEVELS == 0;
     int result = 0;
 
     packed = canonized.pack();
@@ -1142,7 +1263,7 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 
     bool parallelize_rest = !threads_running && depth <= PARALLEL_DEPTH &&
 	depth >= PARALLEL_MIN_DEPTH;
-    bool parallelize = parallelize_rest && (alpha+beta != 0 || depth < ALPHABETA_MIN_DEPTH);
+    bool parallelize = parallelize_rest && (alpha+beta != 0 || depth < CUT_MIN_DEPTH);
     std::array<int, MAX_LEGAL_MOVES> results;
 
     // alpha and beta won't change while this is executing, but they
@@ -1188,7 +1309,7 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 	    }
 	}
 
-	if (parallelize && depth >= ALPHABETA_MIN_DEPTH) {
+	if (parallelize && depth >= CUT_MIN_DEPTH) {
 	    // See if we can cut off
 	    int new_alpha = std::max(result, alpha);
 	    if (new_alpha >= beta)
@@ -1207,7 +1328,7 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 	    if (results[i] == RESULT_ABORTED)
 		return RESULT_ABORTED;
 	    best_value = std::max(results[i], best_value);
-	    if (depth >= ALPHABETA_MIN_DEPTH)
+	    if (depth >= CUT_MIN_DEPTH)
 		alpha = std::max(results[i], alpha);
 	    if (alpha >= beta)
 		break; /* alpha cutoff */
@@ -1291,20 +1412,20 @@ static int negamax(Pos &p, int depth, int alpha, int beta, pos_t packed,
 }
 
 int main() {
-    struct sigaction sa;
+    //struct sigaction sa;
 
     // FIXME signals and threads don't mix
-    sa.sa_handler = handle_signal;
-    sa.sa_flags = SA_RESTART;
+    //sa.sa_handler = handle_signal;
+    //sa.sa_flags = SA_RESTART;
 
-    sigaction(SIGHUP, &sa, nullptr);
-    sigaction(SIGINT, &sa, nullptr);
+    //sigaction(SIGHUP, &sa, nullptr);
+    //sigaction(SIGINT, &sa, nullptr);
     //count_boards();
     //test_pack_unpack();
     //test_do_undo_move();
     //exit(0);
 
-    load_table();
+    //load_table();
 
     //map<pos_t, int> tp_table;
     Pos p;
