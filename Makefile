@@ -4,7 +4,7 @@ CXX=g++
 
 OBJS=pawnsonly.o binom.o
 
-all: pawnsonly atomic_bench.clang atomic_bench.gcc
+all: pawnsonly #atomic_bench.clang atomic_bench.gcc
 
 .cpp.o:
 	$(CXX) -c $< -o $@ $(CXXFLAGS)
