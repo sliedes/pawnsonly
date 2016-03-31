@@ -1,0 +1,10 @@
+A solver for the pawns-only chess variant described in:
+
+   http://www.chesscorner.com/tutorial/basic/pawngame/pawngame.htm
+
+Expect to need quite a bit of memory (tunable by changing
+TP_TABLE_SIZE in pawnsonly.cpp).
+
+Without en passant, the game would be a draw. With en passant, it
+turns out 1. b4/c4/f4/g4 are winning moves for white; all other moves
+are wins for black.
